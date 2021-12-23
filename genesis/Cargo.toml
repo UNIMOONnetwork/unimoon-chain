@@ -28,7 +28,7 @@ solana-vote-program = { path = "../programs/vote", version = "=1.10.0" }
 tempfile = "3.2.0"
 
 [[bin]]
-name = "solana-genesis"
+name = "unimoon-genesis"
 path = "src/main.rs"
 
 [lib]

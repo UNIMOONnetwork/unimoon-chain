@@ -4379,47 +4379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-accounts-bench"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "log 0.4.14",
- "rayon",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-runtime",
- "solana-sdk",
- "solana-version",
-]
-
-[[package]]
-name = "solana-accounts-cluster-bench"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "log 0.4.14",
- "rand 0.7.3",
- "rayon",
- "solana-account-decoder",
- "solana-clap-utils",
- "solana-client",
- "solana-core",
- "solana-faucet",
- "solana-gossip",
- "solana-local-cluster",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-net-utils",
- "solana-runtime",
- "solana-sdk",
- "solana-streamer",
- "solana-test-validator",
- "solana-transaction-status",
- "solana-version",
- "spl-token",
-]
-
-[[package]]
 name = "solana-accountsdb-plugin-interface"
 version = "1.10.0"
 dependencies = [
@@ -4506,28 +4465,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-banking-bench"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "crossbeam-channel",
- "log 0.4.14",
- "rand 0.7.3",
- "rayon",
- "solana-core",
- "solana-gossip",
- "solana-ledger",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-perf",
- "solana-poh",
- "solana-runtime",
- "solana-sdk",
- "solana-streamer",
- "solana-version",
-]
-
-[[package]]
 name = "solana-banks-client"
 version = "1.10.0"
 dependencies = [
@@ -4566,18 +4503,6 @@ dependencies = [
  "tokio",
  "tokio-serde",
  "tokio-stream",
-]
-
-[[package]]
-name = "solana-bench-streamer"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "solana-clap-utils",
- "solana-logger 1.10.0",
- "solana-net-utils",
- "solana-streamer",
- "solana-version",
 ]
 
 [[package]]
@@ -4904,25 +4829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-dos"
-version = "1.10.0"
-dependencies = [
- "bincode",
- "clap 2.33.3",
- "log 0.4.14",
- "rand 0.7.3",
- "solana-client",
- "solana-core",
- "solana-gossip",
- "solana-logger 1.10.0",
- "solana-net-utils",
- "solana-perf",
- "solana-sdk",
- "solana-streamer",
- "solana-version",
-]
-
-[[package]]
 name = "solana-download-utils"
 version = "1.10.0"
 dependencies = [
@@ -5212,42 +5118,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-ledger-tool"
-version = "1.10.0"
-dependencies = [
- "assert_cmd",
- "bs58 0.4.0",
- "bytecount",
- "clap 2.33.3",
- "csv",
- "dashmap",
- "histogram",
- "itertools 0.10.3",
- "log 0.4.14",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "signal-hook",
- "solana-clap-utils",
- "solana-cli-output",
- "solana-core",
- "solana-entry",
- "solana-ledger",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-runtime",
- "solana-sdk",
- "solana-stake-program",
- "solana-storage-bigtable",
- "solana-transaction-status",
- "solana-version",
- "solana-vote-program",
- "tikv-jemallocator",
- "tokio",
-]
-
-[[package]]
 name = "solana-local-cluster"
 version = "1.10.0"
 dependencies = [
@@ -5314,19 +5184,6 @@ version = "1.10.0"
 dependencies = [
  "log 0.4.14",
  "solana-sdk",
-]
-
-[[package]]
-name = "solana-merkle-root-bench"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "log 0.4.14",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-runtime",
- "solana-sdk",
- "solana-version",
 ]
 
 [[package]]
@@ -5437,22 +5294,6 @@ dependencies = [
  "solana-sdk",
  "solana-sys-tuner",
  "thiserror",
-]
-
-[[package]]
-name = "solana-poh-bench"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "log 0.4.14",
- "rand 0.7.3",
- "rayon",
- "solana-entry",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-perf",
- "solana-sdk",
- "solana-version",
 ]
 
 [[package]]
@@ -5868,20 +5709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-stake-accounts"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "solana-clap-utils",
- "solana-cli-config",
- "solana-client",
- "solana-remote-wallet",
- "solana-runtime",
- "solana-sdk",
- "solana-stake-program",
-]
-
-[[package]]
 name = "solana-stake-program"
 version = "1.10.0"
 dependencies = [
@@ -5943,17 +5770,6 @@ dependencies = [
  "solana-sdk",
  "solana-transaction-status",
  "tonic-build",
-]
-
-[[package]]
-name = "solana-store-tool"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "log 0.4.14",
- "solana-logger 1.10.0",
- "solana-runtime",
- "solana-version",
 ]
 
 [[package]]
@@ -6038,32 +5854,6 @@ dependencies = [
  "spl-token",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "solana-transaction-dos"
-version = "1.10.0"
-dependencies = [
- "bincode",
- "clap 2.33.3",
- "log 0.4.14",
- "rand 0.7.3",
- "rayon",
- "solana-clap-utils",
- "solana-cli",
- "solana-client",
- "solana-core",
- "solana-faucet",
- "solana-gossip",
- "solana-local-cluster",
- "solana-logger 1.10.0",
- "solana-measure",
- "solana-net-utils",
- "solana-runtime",
- "solana-sdk",
- "solana-streamer",
- "solana-transaction-status",
- "solana-version",
 ]
 
 [[package]]
@@ -6180,24 +5970,6 @@ dependencies = [
  "solana-sdk",
  "thiserror",
  "typetag",
-]
-
-[[package]]
-name = "solana-watchtower"
-version = "1.10.0"
-dependencies = [
- "clap 2.33.3",
- "humantime",
- "log 0.4.14",
- "solana-clap-utils",
- "solana-cli-config",
- "solana-cli-output",
- "solana-client",
- "solana-logger 1.10.0",
- "solana-metrics",
- "solana-notifier",
- "solana-sdk",
- "solana-version",
 ]
 
 [[package]]
@@ -7208,6 +6980,234 @@ name = "unicode-xid"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ccb82d61f80a663efe1f787a51b16b5a51e3314d6ac365b08639f52387b33f3"
+
+[[package]]
+name = "unimoon-accounts-bench"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "log 0.4.14",
+ "rayon",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-accounts-cluster-bench"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "log 0.4.14",
+ "rand 0.7.3",
+ "rayon",
+ "solana-account-decoder",
+ "solana-clap-utils",
+ "solana-client",
+ "solana-core",
+ "solana-faucet",
+ "solana-gossip",
+ "solana-local-cluster",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-net-utils",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-streamer",
+ "solana-test-validator",
+ "solana-transaction-status",
+ "solana-version",
+ "spl-token",
+]
+
+[[package]]
+name = "unimoon-banking-bench"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "crossbeam-channel",
+ "log 0.4.14",
+ "rand 0.7.3",
+ "rayon",
+ "solana-core",
+ "solana-gossip",
+ "solana-ledger",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-perf",
+ "solana-poh",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-streamer",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-bench-streamer"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "solana-clap-utils",
+ "solana-logger 1.10.0",
+ "solana-net-utils",
+ "solana-streamer",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-dos"
+version = "1.10.0"
+dependencies = [
+ "bincode",
+ "clap 2.33.3",
+ "log 0.4.14",
+ "rand 0.7.3",
+ "solana-client",
+ "solana-core",
+ "solana-gossip",
+ "solana-logger 1.10.0",
+ "solana-net-utils",
+ "solana-perf",
+ "solana-sdk",
+ "solana-streamer",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-ledger-tool"
+version = "1.10.0"
+dependencies = [
+ "assert_cmd",
+ "bs58 0.4.0",
+ "bytecount",
+ "clap 2.33.3",
+ "csv",
+ "dashmap",
+ "histogram",
+ "itertools 0.10.3",
+ "log 0.4.14",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "signal-hook",
+ "solana-clap-utils",
+ "solana-cli-output",
+ "solana-core",
+ "solana-entry",
+ "solana-ledger",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-stake-program",
+ "solana-storage-bigtable",
+ "solana-transaction-status",
+ "solana-version",
+ "solana-vote-program",
+ "tikv-jemallocator",
+ "tokio",
+]
+
+[[package]]
+name = "unimoon-merkle-root-bench"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "log 0.4.14",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-poh-bench"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "log 0.4.14",
+ "rand 0.7.3",
+ "rayon",
+ "solana-entry",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-perf",
+ "solana-sdk",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-stake-accounts"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "solana-clap-utils",
+ "solana-cli-config",
+ "solana-client",
+ "solana-remote-wallet",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-stake-program",
+]
+
+[[package]]
+name = "unimoon-store-tool"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "log 0.4.14",
+ "solana-logger 1.10.0",
+ "solana-runtime",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-transaction-dos"
+version = "1.10.0"
+dependencies = [
+ "bincode",
+ "clap 2.33.3",
+ "log 0.4.14",
+ "rand 0.7.3",
+ "rayon",
+ "solana-clap-utils",
+ "solana-cli",
+ "solana-client",
+ "solana-core",
+ "solana-faucet",
+ "solana-gossip",
+ "solana-local-cluster",
+ "solana-logger 1.10.0",
+ "solana-measure",
+ "solana-net-utils",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-streamer",
+ "solana-transaction-status",
+ "solana-version",
+]
+
+[[package]]
+name = "unimoon-watchtower"
+version = "1.10.0"
+dependencies = [
+ "clap 2.33.3",
+ "humantime",
+ "log 0.4.14",
+ "solana-clap-utils",
+ "solana-cli-config",
+ "solana-cli-output",
+ "solana-client",
+ "solana-logger 1.10.0",
+ "solana-metrics",
+ "solana-notifier",
+ "solana-sdk",
+ "solana-version",
+]
 
 [[package]]
 name = "unix_socket2"

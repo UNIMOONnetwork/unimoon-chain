@@ -27,7 +27,7 @@ sysctl = "0.4.3"
 name = "solana_sys_tuner"
 
 [[bin]]
-name = "solana-sys-tuner"
+name = "unimoon-sys-tuner"
 path = "src/main.rs"
 
 [package.metadata.docs.rs]

@@ -18,7 +18,7 @@ solana-logger = { path = "../logger", version = "=1.10.0" }
 solana-version = { path = "../version", version = "=1.10.0" }
 
 [[bin]]
-name = "solana-log-analyzer"
+name = "unimoon-log-analyzer"
 path = "src/main.rs"
 
 [package.metadata.docs.rs]
