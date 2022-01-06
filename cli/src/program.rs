@@ -42,7 +42,6 @@ use {
         system_instruction::{self, SystemError},
         system_program,
         transaction::{Transaction, TransactionError},
-        transaction_context::TransactionContext,
     },
     std::{
         fs::File,
@@ -1991,8 +1990,7 @@ fn read_and_verify_elf(program_location: &str) -> Result<Vec<u8>, Box<dyn std::e
     let mut program_data = Vec::new();
     file.read_to_end(&mut program_data)
         .map_err(|err| format!("Unable to read program file: {}", err))?;
-    let mut transaction_context = TransactionContext::new(Vec::new(), 1);
-    let mut invoke_context = InvokeContext::new_mock(&mut transaction_context, &[]);
+    let mut invoke_context = InvokeContext::new_mock(&[], &[]);
 
     // Verify the program
     Executable::<BpfError, ThisInstructionMeter>::from_elf(

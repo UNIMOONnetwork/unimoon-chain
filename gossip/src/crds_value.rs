@@ -305,14 +305,15 @@ impl Sanitize for Vote {
 }
 
 impl Vote {
-    // Returns None if cannot parse transaction into a vote.
-    pub fn new(from: Pubkey, transaction: Transaction, wallclock: u64) -> Option<Self> {
-        parse_vote_transaction(&transaction).map(|(_, vote, _)| Self {
+    pub fn new(from: Pubkey, transaction: Transaction, wallclock: u64) -> Self {
+        let slot =
+            parse_vote_transaction(&transaction).and_then(|(_, vote, _)| vote.last_voted_slot());
+        Self {
             from,
             transaction,
             wallclock,
-            slot: vote.last_voted_slot(),
-        })
+            slot,
+        }
     }
 
     /// New random Vote for tests and benchmarks.
@@ -346,11 +347,16 @@ impl<'de> Deserialize<'de> for Vote {
             wallclock: u64,
         }
         let vote = Vote::deserialize(deserializer)?;
-        vote.transaction
-            .sanitize()
-            .map_err(serde::de::Error::custom)?;
-        Self::new(vote.from, vote.transaction, vote.wallclock)
-            .ok_or_else(|| serde::de::Error::custom("invalid vote tx"))
+        let vote = match vote.transaction.sanitize() {
+            Ok(_) => Self::new(vote.from, vote.transaction, vote.wallclock),
+            Err(_) => Self {
+                from: vote.from,
+                transaction: vote.transaction,
+                wallclock: vote.wallclock,
+                slot: None,
+            },
+        };
+        Ok(vote)
     }
 }
 
@@ -686,7 +692,7 @@ mod test {
         bincode::{deserialize, Options},
         rand::SeedableRng,
         rand_chacha::ChaChaRng,
-        solana_perf::test_tx::new_test_vote_tx,
+        solana_perf::test_tx::test_tx,
         solana_sdk::{
             signature::{Keypair, Signer},
             timing::timestamp,
@@ -697,14 +703,15 @@ mod test {
 
     #[test]
     fn test_keys_and_values() {
-        let mut rng = rand::thread_rng();
         let v = CrdsValue::new_unsigned(CrdsData::ContactInfo(ContactInfo::default()));
         assert_eq!(v.wallclock(), 0);
         let key = v.contact_info().unwrap().id;
         assert_eq!(v.label(), CrdsValueLabel::ContactInfo(key));
 
-        let v = Vote::new(Pubkey::default(), new_test_vote_tx(&mut rng), 0).unwrap();
-        let v = CrdsValue::new_unsigned(CrdsData::Vote(0, v));
+        let v = CrdsValue::new_unsigned(CrdsData::Vote(
+            0,
+            Vote::new(Pubkey::default(), test_tx(), 0),
+        ));
         assert_eq!(v.wallclock(), 0);
         let key = match &v.data {
             CrdsData::Vote(_, vote) => vote.from,
@@ -752,7 +759,6 @@ mod test {
 
     #[test]
     fn test_signature() {
-        let mut rng = rand::thread_rng();
         let keypair = Keypair::new();
         let wrong_keypair = Keypair::new();
         let mut v = CrdsValue::new_unsigned(CrdsData::ContactInfo(ContactInfo::new_localhost(
@@ -760,8 +766,10 @@ mod test {
             timestamp(),
         )));
         verify_signatures(&mut v, &keypair, &wrong_keypair);
-        let v = Vote::new(keypair.pubkey(), new_test_vote_tx(&mut rng), timestamp()).unwrap();
-        let mut v = CrdsValue::new_unsigned(CrdsData::Vote(0, v));
+        v = CrdsValue::new_unsigned(CrdsData::Vote(
+            0,
+            Vote::new(keypair.pubkey(), test_tx(), timestamp()),
+        ));
         verify_signatures(&mut v, &keypair, &wrong_keypair);
         v = CrdsValue::new_unsigned(CrdsData::LowestSlot(
             0,
@@ -772,10 +780,14 @@ mod test {
 
     #[test]
     fn test_max_vote_index() {
-        let mut rng = rand::thread_rng();
         let keypair = Keypair::new();
-        let vote = Vote::new(keypair.pubkey(), new_test_vote_tx(&mut rng), timestamp()).unwrap();
-        let vote = CrdsValue::new_signed(CrdsData::Vote(MAX_VOTES, vote), &keypair);
+        let vote = CrdsValue::new_signed(
+            CrdsData::Vote(
+                MAX_VOTES,
+                Vote::new(keypair.pubkey(), test_tx(), timestamp()),
+            ),
+            &keypair,
+        );
         assert!(vote.sanitize().is_err());
     }
 
@@ -799,8 +811,7 @@ mod test {
             Pubkey::new_unique(), // from
             tx,
             rng.gen(), // wallclock
-        )
-        .unwrap();
+        );
         assert_eq!(vote.slot, Some(7));
         let bytes = bincode::serialize(&vote).unwrap();
         let other = bincode::deserialize(&bytes[..]).unwrap();

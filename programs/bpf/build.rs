@@ -95,7 +95,6 @@ fn main() {
             "spoof1_system",
             "upgradeable",
             "upgraded",
-            "zk_token_elgamal",
         ];
         for program in rust_programs.iter() {
             println!(

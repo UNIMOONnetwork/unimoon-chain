@@ -10,7 +10,6 @@ use {
     rayon::prelude::*,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
-        packet_deduper::PacketDeduper,
         qos_service::QosService,
     },
     solana_entry::entry::{next_hash, Entry},
@@ -98,7 +97,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 None::<Box<dyn Fn()>>,
                 &BankingStageStats::default(),
                 &recorder,
-                &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &Arc::new(QosService::new(Arc::new(RwLock::new(CostModel::default())))),
             );
         });
 
@@ -222,7 +221,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let packet_deduper = PacketDeduper::default();
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,
@@ -232,7 +230,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             None,
             s,
             Arc::new(RwLock::new(CostModel::default())),
-            packet_deduper.clone(),
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 
@@ -267,7 +264,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             // in this chunk, but since we rotate between CHUNKS then
             // we should clear them by the time we come around again to re-use that chunk.
             bank.clear_signatures();
-            packet_deduper.reset();
             trace!(
                 "time: {} checked: {} sent: {}",
                 duration_as_us(&now.elapsed()),

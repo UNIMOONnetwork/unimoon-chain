@@ -125,7 +125,6 @@ impl BigTableConnection {
         instance_name: &str,
         read_only: bool,
         timeout: Option<Duration>,
-        credential_path: Option<String>,
     ) -> Result<Self> {
         match std::env::var("BIGTABLE_EMULATOR_HOST") {
             Ok(endpoint) => {
@@ -142,14 +141,11 @@ impl BigTableConnection {
             }
 
             Err(_) => {
-                let access_token = AccessToken::new(
-                    if read_only {
-                        Scope::BigTableDataReadOnly
-                    } else {
-                        Scope::BigTableData
-                    },
-                    credential_path,
-                )
+                let access_token = AccessToken::new(if read_only {
+                    Scope::BigTableDataReadOnly
+                } else {
+                    Scope::BigTableData
+                })
                 .await
                 .map_err(Error::AccessToken)?;
 

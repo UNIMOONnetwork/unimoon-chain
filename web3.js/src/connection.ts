@@ -498,7 +498,6 @@ export type ParsedInnerInstruction = {
 export type TokenBalance = {
   accountIndex: number;
   mint: string;
-  owner?: string;
   uiTokenAmount: TokenAmount;
 };
 
@@ -1438,7 +1437,6 @@ const ParsedConfirmedTransactionResult = pick({
 const TokenBalanceResult = pick({
   accountIndex: number(),
   mint: string(),
-  owner: optional(string()),
   uiTokenAmount: TokenAmountResult,
 });
 
@@ -1714,16 +1712,6 @@ export type GetParsedProgramAccountsConfig = {
 };
 
 /**
- * Configuration object for getMultipleAccounts
- */
-export type GetMultipleAccountsConfig = {
-  /** Optional commitment level */
-  commitment?: Commitment;
-  /** Optional encoding for account data (default base64) */
-  encoding?: 'base64' | 'jsonParsed';
-};
-
-/**
  * Information describing an account
  */
 export type AccountInfo<T> = {
@@ -1735,7 +1723,7 @@ export type AccountInfo<T> = {
   lamports: number;
   /** Optional data assigned to the account */
   data: T;
-  /** Optional rent epoch info for account */
+  /** Optional rent epoch infor for account */
   rentEpoch?: number;
 };
 
@@ -2491,27 +2479,14 @@ export class Connection {
    */
   async getMultipleAccountsInfo(
     publicKeys: PublicKey[],
-    configOrCommitment?: GetMultipleAccountsConfig | Commitment,
-  ): Promise<(AccountInfo<Buffer | ParsedAccountData> | null)[]> {
+    commitment?: Commitment,
+  ): Promise<(AccountInfo<Buffer> | null)[]> {
     const keys = publicKeys.map(key => key.toBase58());
-
-    let commitment;
-    let encoding: 'base64' | 'jsonParsed' = 'base64';
-    if (configOrCommitment) {
-      if (typeof configOrCommitment === 'string') {
-        commitment = configOrCommitment;
-        encoding = 'base64';
-      } else {
-        commitment = configOrCommitment.commitment;
-        encoding = configOrCommitment.encoding || 'base64';
-      }
-    }
-
-    const args = this._buildArgs([keys], commitment, encoding);
+    const args = this._buildArgs([keys], commitment, 'base64');
     const unsafeRes = await this._rpcRequest('getMultipleAccounts', args);
     const res = create(
       unsafeRes,
-      jsonRpcResultAndContext(array(nullable(ParsedAccountInfoResult))),
+      jsonRpcResultAndContext(array(nullable(AccountInfoResult))),
     );
     if ('error' in res) {
       throw new Error(

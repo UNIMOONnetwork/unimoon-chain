@@ -13,10 +13,6 @@ use {
     log::*,
     ouroboros::self_referencing,
     rand::{thread_rng, Rng},
-    rayon::{
-        iter::{IntoParallelIterator, ParallelIterator},
-        ThreadPool,
-    },
     solana_measure::measure::Measure,
     solana_sdk::{
         clock::{BankId, Slot},
@@ -746,22 +742,21 @@ impl<'a, T: IndexValue> AccountsIndexIterator<'a, T> {
         }
     }
 
-    pub fn hold_range_in_memory<R>(&self, range: &R, start_holding: bool, thread_pool: &ThreadPool)
+    pub fn hold_range_in_memory<R>(&self, range: &R, start_holding: bool)
     where
-        R: RangeBounds<Pubkey> + Debug + Sync,
+        R: RangeBounds<Pubkey> + Debug,
     {
         // forward this hold request ONLY to the bins which contain keys in the specified range
         let (start_bin, bin_range) = self.bin_start_and_range();
-        // the idea is this range shouldn't be more than a few buckets, but the process of loading from disk buckets is very slow
-        // so, parallelize the bucket loads
-        thread_pool.install(|| {
-            (0..bin_range).into_par_iter().for_each(|idx| {
-                let map = &self.account_maps[idx + start_bin];
+        self.account_maps
+            .iter()
+            .skip(start_bin)
+            .take(bin_range)
+            .for_each(|map| {
                 map.read()
                     .unwrap()
                     .hold_range_in_memory(range, start_holding);
             });
-        });
     }
 }
 
@@ -1465,12 +1460,12 @@ impl<T: IndexValue> AccountsIndex<T> {
         rv.map(|index| slice.len() - 1 - index)
     }
 
-    pub fn hold_range_in_memory<R>(&self, range: &R, start_holding: bool, thread_pool: &ThreadPool)
+    pub fn hold_range_in_memory<R>(&self, range: &R, start_holding: bool)
     where
-        R: RangeBounds<Pubkey> + Debug + Sync,
+        R: RangeBounds<Pubkey> + Debug,
     {
         let iter = self.iter(Some(range), true);
-        iter.hold_range_in_memory(range, start_holding, thread_pool);
+        iter.hold_range_in_memory(range, start_holding);
     }
 
     pub fn set_startup(&self, value: bool) {

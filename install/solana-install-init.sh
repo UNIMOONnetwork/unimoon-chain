@@ -62,24 +62,17 @@ main() {
       esac
     done
 
-    _ostype="$(uname -s)"
-    _cputype="$(uname -m)"
-
-    case "$_ostype" in
+    case "$(uname)" in
     Linux)
-      _ostype=unknown-linux-gnu
+      TARGET=x86_64-unknown-linux-gnu
       ;;
     Darwin)
-      if [[ $_cputype = arm64 ]]; then
-        _cputype=aarch64
-      fi
-      _ostype=apple-darwin
+      TARGET=x86_64-apple-darwin
       ;;
     *)
       err "machine architecture is currently unsupported"
       ;;
     esac
-    TARGET="${_cputype}-${_ostype}"
 
     temp_dir="$(mktemp -d 2>/dev/null || ensure mktemp -d -t solana-install-init)"
     ensure mkdir -p "$temp_dir"

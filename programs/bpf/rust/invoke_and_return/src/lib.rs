@@ -14,6 +14,7 @@ fn process_instruction(
     instruction_data: &[u8],
 ) -> ProgramResult {
     let to_call = accounts[0].key;
+    let infos = accounts;
     let instruction = Instruction {
         accounts: accounts[1..]
             .iter()
@@ -26,7 +27,5 @@ fn process_instruction(
         data: instruction_data.to_owned(),
         program_id: *to_call,
     };
-    // program id account is not required for invocations if the
-    // program id is not one of the instruction account metas.
-    invoke(&instruction, &accounts[1..])
+    invoke(&instruction, infos)
 }

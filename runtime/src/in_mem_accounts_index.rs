@@ -806,13 +806,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         thread_rng().gen_range(0, N) == 0
     }
 
-    /// assumes 1 entry in the slot list. Ignores overhead of the HashMap and such
-    fn approx_size_of_one_entry() -> usize {
-        std::mem::size_of::<T>()
-            + std::mem::size_of::<Pubkey>()
-            + std::mem::size_of::<AccountMapEntry<T>>()
-    }
-
     /// return true if 'entry' should be removed from the in-mem index
     fn should_remove_from_mem(
         &self,
@@ -820,30 +813,24 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         entry: &AccountMapEntry<T>,
         startup: bool,
         update_stats: bool,
-        exceeds_budget: bool,
     ) -> bool {
         // this could be tunable dynamically based on memory pressure
         // we could look at more ages or we could throw out more items we are choosing to keep in the cache
         if startup || (current_age == entry.age()) {
-            if exceeds_budget {
-                // if we are already holding too many items in-mem, then we need to be more aggressive at kicking things out
-                true
-            } else {
-                // only read the slot list if we are planning to throw the item out
-                let slot_list = entry.slot_list.read().unwrap();
-                if slot_list.len() != 1 {
-                    if update_stats {
-                        Self::update_stat(&self.stats().held_in_mem_slot_list_len, 1);
-                    }
-                    false // keep 0 and > 1 slot lists in mem. They will be cleaned or shrunk soon.
-                } else {
-                    // keep items with slot lists that contained cached items
-                    let remove = !slot_list.iter().any(|(_, info)| info.is_cached());
-                    if !remove && update_stats {
-                        Self::update_stat(&self.stats().held_in_mem_slot_list_cached, 1);
-                    }
-                    remove
+            // only read the slot list if we are planning to throw the item out
+            let slot_list = entry.slot_list.read().unwrap();
+            if slot_list.len() != 1 {
+                if update_stats {
+                    Self::update_stat(&self.stats().held_in_mem_slot_list_len, 1);
                 }
+                false // keep 0 and > 1 slot lists in mem. They will be cleaned or shrunk soon.
+            } else {
+                // keep items with slot lists that contained cached items
+                let remove = !slot_list.iter().any(|(_, info)| info.is_cached());
+                if !remove && update_stats {
+                    Self::update_stat(&self.stats().held_in_mem_slot_list_cached, 1);
+                }
+                remove
             }
         } else {
             false
@@ -861,12 +848,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             return;
         }
 
-        let in_mem_count = self.stats().count_in_mem.load(Ordering::Relaxed);
-        let limit = self.storage.mem_budget_mb;
-        let exceeds_budget = limit
-            .map(|limit| in_mem_count * Self::approx_size_of_one_entry() >= limit * 1024 * 1024)
-            .unwrap_or_default();
-
         // may have to loop if disk has to grow and we have to restart
         loop {
             let mut removes;
@@ -882,7 +863,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
                 removes = Vec::with_capacity(map.len());
                 let m = Measure::start("flush_scan_and_update"); // we don't care about lock time in this metric - bg threads can wait
                 for (k, v) in map.iter() {
-                    if self.should_remove_from_mem(current_age, v, startup, true, exceeds_budget) {
+                    if self.should_remove_from_mem(current_age, v, startup, true) {
                         removes.push(*k);
                     } else if Self::random_chance_of_eviction() {
                         removes_random.push(*k);
@@ -921,19 +902,9 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             let m = Measure::start("flush_remove_or_grow");
             match disk_resize {
                 Ok(_) => {
-                    if !self.flush_remove_from_cache(
-                        removes,
-                        current_age,
-                        startup,
-                        false,
-                        exceeds_budget,
-                    ) || !self.flush_remove_from_cache(
-                        removes_random,
-                        current_age,
-                        startup,
-                        true,
-                        exceeds_budget,
-                    ) {
+                    if !self.flush_remove_from_cache(removes, current_age, startup, false)
+                        || !self.flush_remove_from_cache(removes_random, current_age, startup, true)
+                    {
                         iterate_for_age = false; // did not make it all the way through this bucket, so didn't handle age completely
                     }
                     Self::update_time_stat(&self.stats().flush_remove_us, m);
@@ -963,7 +934,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         current_age: Age,
         startup: bool,
         randomly_evicted: bool,
-        exceeds_budget: bool,
     ) -> bool {
         let mut completed_scan = true;
         if removes.is_empty() {
@@ -986,13 +956,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
 
                 if v.dirty()
                     || (!randomly_evicted
-                        && !self.should_remove_from_mem(
-                            current_age,
-                            v,
-                            startup,
-                            false,
-                            exceeds_budget,
-                        ))
+                        && !self.should_remove_from_mem(current_age, v, startup, false))
                 {
                     // marked dirty or bumped in age after we looked above
                     // these will be handled in later passes
@@ -1089,18 +1053,6 @@ mod tests {
             AccountMapEntryMeta::default(),
         ));
 
-        // exceeded budget
-        assert!(bucket.should_remove_from_mem(
-            current_age,
-            &Arc::new(AccountMapEntryInner::new(
-                vec![],
-                ref_count,
-                AccountMapEntryMeta::default()
-            )),
-            startup,
-            false,
-            true,
-        ));
         // empty slot list
         assert!(!bucket.should_remove_from_mem(
             current_age,
@@ -1111,14 +1063,12 @@ mod tests {
             )),
             startup,
             false,
-            false,
         ));
         // 1 element slot list
         assert!(bucket.should_remove_from_mem(
             current_age,
             &one_element_slot_list_entry,
             startup,
-            false,
             false,
         ));
         // 2 element slot list
@@ -1130,7 +1080,6 @@ mod tests {
                 AccountMapEntryMeta::default()
             )),
             startup,
-            false,
             false,
         ));
 
@@ -1146,7 +1095,6 @@ mod tests {
                 )),
                 startup,
                 false,
-                false,
             ));
         }
 
@@ -1155,7 +1103,6 @@ mod tests {
             current_age,
             &one_element_slot_list_entry,
             startup,
-            false,
             false,
         ));
 
@@ -1166,7 +1113,6 @@ mod tests {
             &one_element_slot_list_entry,
             startup,
             false,
-            false,
         ));
 
         // 1 element slot list, but at startup and age not current
@@ -1175,7 +1121,6 @@ mod tests {
             current_age,
             &one_element_slot_list_entry,
             startup,
-            false,
             false,
         ));
     }
