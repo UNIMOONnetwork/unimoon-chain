@@ -16,6 +16,7 @@ use {
     },
     solana_sdk::{
         account::AccountSharedData, bpf_loader, instruction::AccountMeta, pubkey::Pubkey,
+        transaction_context::TransactionContext,
     },
     std::{
         fs::File,
@@ -209,27 +210,23 @@ native machine code before execting it in the virtual machine.",
         }
     };
     let program_indices = [0, 1];
-    let preparation = prepare_mock_invoke_context(
-        &program_indices,
-        &[],
-        transaction_accounts,
-        instruction_accounts,
-    );
-    let mut invoke_context = InvokeContext::new_mock(&preparation.accounts, &[]);
+    let preparation =
+        prepare_mock_invoke_context(transaction_accounts, instruction_accounts, &program_indices);
+    let mut transaction_context = TransactionContext::new(preparation.transaction_accounts, 1);
+    let mut invoke_context = InvokeContext::new_mock(&mut transaction_context, &[]);
     invoke_context
         .push(
-            &preparation.message,
-            &preparation.message.instructions[0],
+            &preparation.instruction_accounts,
             &program_indices,
-            &preparation.account_indices,
+            &instruction_data,
         )
         .unwrap();
-    let keyed_accounts = invoke_context.get_keyed_accounts().unwrap();
     let (mut parameter_bytes, account_lengths) = serialize_parameters(
-        keyed_accounts[0].unsigned_key(),
-        keyed_accounts[1].unsigned_key(),
-        &keyed_accounts[2..],
-        &instruction_data,
+        invoke_context.transaction_context,
+        invoke_context
+            .transaction_context
+            .get_current_instruction_context()
+            .unwrap(),
     )
     .unwrap();
     let compute_meter = invoke_context.get_compute_meter();

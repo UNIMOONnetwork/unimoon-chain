@@ -36,7 +36,7 @@ use {
     solana_ledger::{
         bank_forks_utils,
         blockstore::{Blockstore, BlockstoreSignals, CompletedSlotsReceiver, PurgeType},
-        blockstore_db::BlockstoreRecoveryMode,
+        blockstore_db::{BlockstoreOptions, BlockstoreRecoveryMode},
         blockstore_processor::{self, TransactionStatusSender},
         leader_schedule::FixedSchedule,
         leader_schedule_cache::LeaderScheduleCache,
@@ -427,6 +427,13 @@ impl Validator {
                     accountsdb_plugin_service.get_transaction_notifier()
                 });
 
+        let block_metadata_notifier =
+            accountsdb_plugin_service
+                .as_ref()
+                .and_then(|accountsdb_plugin_service| {
+                    accountsdb_plugin_service.get_block_metadata_notifier()
+                });
+
         info!(
             "AccountsDb plugin: accounts_update_notifier: {} transaction_notifier: {}",
             accounts_update_notifier.is_some(),
@@ -701,6 +708,9 @@ impl Validator {
         };
 
         let (stats_reporter_sender, stats_reporter_receiver) = channel();
+        // https://github.com/rust-lang/rust/issues/39364#issuecomment-634545136
+        let _stats_reporter_sender = stats_reporter_sender.clone();
+
         let stats_reporter_service = StatsReporterService::new(stats_reporter_receiver, &exit);
 
         let gossip_service = GossipService::new(
@@ -884,6 +894,7 @@ impl Validator {
             &cost_model,
             accounts_package_channel,
             last_full_snapshot_slot,
+            block_metadata_notifier,
         );
 
         let tpu = Tpu::new(
@@ -1254,8 +1265,11 @@ fn new_banks_from_ledger(
         ..
     } = Blockstore::open_with_signal(
         ledger_path,
-        config.wal_recovery_mode.clone(),
-        enforce_ulimit_nofile,
+        BlockstoreOptions {
+            recovery_mode: config.wal_recovery_mode.clone(),
+            enforce_ulimit_nofile,
+            ..BlockstoreOptions::default()
+        },
     )
     .expect("Failed to open ledger database");
     blockstore.set_no_compaction(config.no_rocksdb_compaction);
@@ -1819,7 +1833,7 @@ mod tests {
             info!("creating shreds");
             let mut last_print = Instant::now();
             for i in 1..10 {
-                let shreds = blockstore::entries_to_test_shreds(entries.clone(), i, i - 1, true, 1);
+                let shreds = blockstore::entries_to_test_shreds(&entries, i, i - 1, true, 1);
                 blockstore.insert_shreds(shreds, None, true).unwrap();
                 if last_print.elapsed().as_millis() > 5000 {
                     info!("inserted {}", i);

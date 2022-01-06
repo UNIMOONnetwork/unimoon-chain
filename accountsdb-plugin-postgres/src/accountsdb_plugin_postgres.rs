@@ -12,7 +12,7 @@ use {
     serde_json,
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
         AccountsDbPlugin, AccountsDbPluginError, ReplicaAccountInfoVersions,
-        ReplicaTransactionInfoVersions, Result, SlotStatus,
+        ReplicaBlockInfoVersions, ReplicaTransactionInfoVersions, Result, SlotStatus,
     },
     solana_metrics::*,
     std::{fs::File, io::Read},
@@ -41,6 +41,8 @@ pub struct AccountsDbPluginPostgresConfig {
     pub threads: Option<usize>,
     pub batch_size: Option<usize>,
     pub panic_on_db_errors: Option<bool>,
+    /// Indicates if to store historical data for accounts
+    pub store_account_historical_data: Option<bool>,
 }
 
 #[derive(Error, Debug)]
@@ -74,7 +76,7 @@ impl AccountsDbPlugin for AccountsDbPluginPostgres {
     /// Accounts either satisyfing the accounts condition or owners condition will be selected.
     /// When only owners is specified,
     /// all accounts belonging to the owners will be streamed.
-    /// The accounts field support wildcard to select all accounts:
+    /// The accounts field supports wildcard to select all accounts:
     /// "accounts_selector" : {
     ///     "accounts" : \["*"\],
     /// }
@@ -85,6 +87,8 @@ impl AccountsDbPlugin for AccountsDbPluginPostgres {
     /// Please refer to https://docs.rs/postgres/0.19.2/postgres/config/struct.Config.html for the connection configuration.
     /// When `connection_str` is set, the values in "host", "user" and "port" are ignored. If `connection_str` is not given,
     /// `host` and `user` must be given.
+    /// "store_account_historical_data", optional, set it to 'true', to store historical account data to account_audit
+    /// table.
     /// * "threads" optional, specifies the number of worker threads for the plugin. A thread
     /// maintains a PostgreSQL connection to the server. The default is '10'.
     /// * "batch_size" optional, specifies the batch size of bulk insert when the AccountsDb is created
@@ -325,6 +329,31 @@ impl AccountsDbPlugin for AccountsDbPluginPostgres {
                     if let Err(err) = result {
                         return Err(AccountsDbPluginError::SlotStatusUpdateError{
                                 msg: format!("Failed to persist the transaction info to the PostgreSQL database. Error: {:?}", err)
+                            });
+                    }
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    fn notify_block_metadata(&mut self, block_info: ReplicaBlockInfoVersions) -> Result<()> {
+        match &mut self.client {
+            None => {
+                return Err(AccountsDbPluginError::Custom(Box::new(
+                    AccountsDbPluginPostgresError::DataStoreConnectionError {
+                        msg: "There is no connection to the PostgreSQL database.".to_string(),
+                    },
+                )));
+            }
+            Some(client) => match block_info {
+                ReplicaBlockInfoVersions::V0_0_1(block_info) => {
+                    let result = client.update_block_metadata(block_info);
+
+                    if let Err(err) = result {
+                        return Err(AccountsDbPluginError::SlotStatusUpdateError{
+                                msg: format!("Failed to persist the update of block metadata to the PostgreSQL database. Error: {:?}", err)
                             });
                     }
                 }

@@ -38,8 +38,8 @@ use {
         clock::Clock,
         entrypoint::{HEAP_LENGTH, SUCCESS},
         feature_set::{
-            do_support_realloc, reduce_required_deploy_balance, reject_all_elf_rw,
-            reject_deployment_of_unresolved_syscalls,
+            cap_accounts_data_len, do_support_realloc, reduce_required_deploy_balance,
+            reject_all_elf_rw, reject_deployment_of_unresolved_syscalls,
             reject_section_virtual_address_file_offset_mismatch, requestable_heap_size,
             start_verify_shift32_imm, stop_verify_mul64_imm_nonzero,
         },
@@ -47,9 +47,11 @@ use {
         keyed_account::{from_keyed_account, keyed_account_at_index, KeyedAccount},
         loader_instruction::LoaderInstruction,
         loader_upgradeable_instruction::UpgradeableLoaderInstruction,
+        program_error::ACCOUNTS_DATA_BUDGET_EXCEEDED,
         program_utils::limited_deserialize,
         pubkey::Pubkey,
         rent::Rent,
+        saturating_add_assign,
         system_instruction::{self, MAX_PERMITTED_DATA_LENGTH},
     },
     std::{cell::RefCell, fmt::Debug, pin::Pin, rc::Rc, sync::Arc},
@@ -84,7 +86,14 @@ pub fn create_executor(
     use_jit: bool,
     reject_deployment_of_broken_elfs: bool,
 ) -> Result<Arc<BpfExecutor>, InstructionError> {
-    let syscall_registry = syscalls::register_syscalls(invoke_context).map_err(|e| {
+    let mut register_syscalls_time = Measure::start("register_syscalls_time");
+    let register_syscall_result = syscalls::register_syscalls(invoke_context);
+    register_syscalls_time.stop();
+    invoke_context.timings.create_executor_register_syscalls_us = invoke_context
+        .timings
+        .create_executor_register_syscalls_us
+        .saturating_add(register_syscalls_time.as_us());
+    let syscall_registry = register_syscall_result.map_err(|e| {
         ic_msg!(invoke_context, "Failed to register syscalls: {}", e);
         InstructionError::ProgramEnvironmentSetupFailure
     })?;
@@ -115,20 +124,40 @@ pub fn create_executor(
     let mut executable = {
         let keyed_accounts = invoke_context.get_keyed_accounts()?;
         let programdata = keyed_account_at_index(keyed_accounts, programdata_account_index)?;
-        Executable::<BpfError, ThisInstructionMeter>::from_elf(
+        let mut load_elf_time = Measure::start("load_elf_time");
+        let executable = Executable::<BpfError, ThisInstructionMeter>::from_elf(
             &programdata.try_account_ref()?.data()[programdata_offset..],
             None,
             config,
             syscall_registry,
-        )
+        );
+        load_elf_time.stop();
+        invoke_context.timings.create_executor_load_elf_us = invoke_context
+            .timings
+            .create_executor_load_elf_us
+            .saturating_add(load_elf_time.as_us());
+        executable
     }
     .map_err(|e| map_ebpf_error(invoke_context, e))?;
     let text_bytes = executable.get_text_bytes().1;
+    let mut verify_code_time = Measure::start("verify_code_time");
     verifier::check(text_bytes, &config)
         .map_err(|e| map_ebpf_error(invoke_context, EbpfError::UserError(e.into())))?;
+    verify_code_time.stop();
+    invoke_context.timings.create_executor_verify_code_us = invoke_context
+        .timings
+        .create_executor_verify_code_us
+        .saturating_add(verify_code_time.as_us());
     if use_jit {
-        if let Err(err) = Executable::<BpfError, ThisInstructionMeter>::jit_compile(&mut executable)
-        {
+        let mut jit_compile_time = Measure::start("jit_compile_time");
+        let jit_compile_result =
+            Executable::<BpfError, ThisInstructionMeter>::jit_compile(&mut executable);
+        jit_compile_time.stop();
+        invoke_context.timings.create_executor_jit_compile_us = invoke_context
+            .timings
+            .create_executor_jit_compile_us
+            .saturating_add(jit_compile_time.as_us());
+        if let Err(err) = jit_compile_result {
             ic_msg!(invoke_context, "Failed to compile program {:?}", err);
             return Err(InstructionError::ProgramFailedToCompile);
         }
@@ -224,7 +253,7 @@ fn process_instruction_common(
     use_jit: bool,
 ) -> Result<(), InstructionError> {
     let log_collector = invoke_context.get_log_collector();
-    let program_id = invoke_context.get_caller()?;
+    let program_id = invoke_context.transaction_context.get_program_key()?;
 
     let keyed_accounts = invoke_context.get_keyed_accounts()?;
     let first_account = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
@@ -290,6 +319,7 @@ fn process_instruction_common(
             0
         };
 
+        let mut get_or_create_executor_time = Measure::start("get_or_create_executor_time");
         let executor = match invoke_context.get_executor(program_id) {
             Some(executor) => executor,
             None => {
@@ -300,11 +330,17 @@ fn process_instruction_common(
                     use_jit,
                     false,
                 )?;
-                let program_id = invoke_context.get_caller()?;
+                let program_id = invoke_context.transaction_context.get_program_key()?;
                 invoke_context.add_executor(program_id, executor.clone());
                 executor
             }
         };
+        get_or_create_executor_time.stop();
+        saturating_add_assign!(
+            invoke_context.timings.get_or_create_executor_us,
+            get_or_create_executor_time.as_us()
+        );
+
         executor.execute(
             next_first_instruction_account,
             instruction_data,
@@ -341,7 +377,7 @@ fn process_loader_upgradeable_instruction(
     use_jit: bool,
 ) -> Result<(), InstructionError> {
     let log_collector = invoke_context.get_log_collector();
-    let program_id = invoke_context.get_caller()?;
+    let program_id = invoke_context.transaction_context.get_program_key()?;
     let keyed_accounts = invoke_context.get_keyed_accounts()?;
 
     match limited_deserialize(instruction_data)? {
@@ -494,7 +530,7 @@ fn process_loader_upgradeable_instruction(
                 .accounts
                 .push(AccountMeta::new(*buffer.unsigned_key(), false));
 
-            let caller_program_id = invoke_context.get_caller()?;
+            let caller_program_id = invoke_context.transaction_context.get_program_key()?;
             let signers = [&[new_program_id.as_ref(), &[bump_seed]]]
                 .iter()
                 .map(|seeds| Pubkey::create_program_address(*seeds, caller_program_id))
@@ -509,7 +545,7 @@ fn process_loader_upgradeable_instruction(
                 use_jit,
                 true,
             )?;
-            invoke_context.add_executor(&new_program_id, executor);
+            invoke_context.update_executor(&new_program_id, executor);
 
             let keyed_accounts = invoke_context.get_keyed_accounts()?;
             let payer = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
@@ -657,7 +693,7 @@ fn process_loader_upgradeable_instruction(
                 use_jit,
                 true,
             )?;
-            invoke_context.add_executor(&new_program_id, executor);
+            invoke_context.update_executor(&new_program_id, executor);
 
             let keyed_accounts = invoke_context.get_keyed_accounts()?;
             let programdata = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
@@ -891,7 +927,7 @@ fn process_loader_instruction(
     invoke_context: &mut InvokeContext,
     use_jit: bool,
 ) -> Result<(), InstructionError> {
-    let program_id = invoke_context.get_caller()?;
+    let program_id = invoke_context.transaction_context.get_program_key()?;
     let keyed_accounts = invoke_context.get_keyed_accounts()?;
     let program = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
     if program.owner()? != *program_id {
@@ -924,7 +960,7 @@ fn process_loader_instruction(
                 create_executor(first_instruction_account, 0, invoke_context, use_jit, true)?;
             let keyed_accounts = invoke_context.get_keyed_accounts()?;
             let program = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
-            invoke_context.add_executor(program.unsigned_key(), executor);
+            invoke_context.update_executor(program.unsigned_key(), executor);
             program.try_account_ref_mut()?.set_executable(true);
             ic_msg!(
                 invoke_context,
@@ -972,8 +1008,8 @@ impl Debug for BpfExecutor {
 impl Executor for BpfExecutor {
     fn execute<'a, 'b>(
         &self,
-        first_instruction_account: usize,
-        instruction_data: &[u8],
+        _first_instruction_account: usize,
+        _instruction_data: &[u8],
         invoke_context: &'a mut InvokeContext<'b>,
         use_jit: bool,
     ) -> Result<(), InstructionError> {
@@ -982,20 +1018,17 @@ impl Executor for BpfExecutor {
         let invoke_depth = invoke_context.invoke_depth();
 
         let mut serialize_time = Measure::start("serialize");
-        let keyed_accounts = invoke_context.get_keyed_accounts()?;
-        let program = keyed_account_at_index(keyed_accounts, first_instruction_account)?;
-        let loader_id = program.owner()?;
-        let program_id = *program.unsigned_key();
+        let program_id = *invoke_context.transaction_context.get_program_key()?;
         let (mut parameter_bytes, account_lengths) = serialize_parameters(
-            &loader_id,
-            &program_id,
-            &keyed_accounts[first_instruction_account + 1..],
-            instruction_data,
+            invoke_context.transaction_context,
+            invoke_context
+                .transaction_context
+                .get_current_instruction_context()?,
         )?;
         serialize_time.stop();
         let mut create_vm_time = Measure::start("create_vm");
         let mut execute_time;
-        {
+        let execution_result = {
             let mut vm = match create_vm(
                 &self.executable,
                 parameter_bytes.as_slice_mut(),
@@ -1040,12 +1073,20 @@ impl Executor for BpfExecutor {
                 stable_log::program_return(&log_collector, &program_id, return_data);
             }
             match result {
-                Ok(status) => {
-                    if status != SUCCESS {
-                        let error: InstructionError = status.into();
-                        stable_log::program_failure(&log_collector, &program_id, &error);
-                        return Err(error);
-                    }
+                Ok(status) if status != SUCCESS => {
+                    let error: InstructionError = if status == ACCOUNTS_DATA_BUDGET_EXCEEDED
+                        && !invoke_context
+                            .feature_set
+                            .is_active(&cap_accounts_data_len::id())
+                    {
+                        // Until the cap_accounts_data_len feature is enabled, map the
+                        // ACCOUNTS_DATA_BUDGET_EXCEEDED error to InvalidError
+                        InstructionError::InvalidError
+                    } else {
+                        status.into()
+                    };
+                    stable_log::program_failure(&log_collector, &program_id, &error);
+                    Err(error)
                 }
                 Err(error) => {
                     let error = match error {
@@ -1058,23 +1099,30 @@ impl Executor for BpfExecutor {
                         }
                     };
                     stable_log::program_failure(&log_collector, &program_id, &error);
-                    return Err(error);
+                    Err(error)
                 }
+                _ => Ok(()),
             }
-            execute_time.stop();
-        }
+        };
+        execute_time.stop();
+
         let mut deserialize_time = Measure::start("deserialize");
-        let keyed_accounts = invoke_context.get_keyed_accounts()?;
-        deserialize_parameters(
-            &loader_id,
-            &keyed_accounts[first_instruction_account + 1..],
-            parameter_bytes.as_slice(),
-            &account_lengths,
-            invoke_context
-                .feature_set
-                .is_active(&do_support_realloc::id()),
-        )?;
+        let execute_or_deserialize_result = execution_result.and_then(|_| {
+            deserialize_parameters(
+                invoke_context.transaction_context,
+                invoke_context
+                    .transaction_context
+                    .get_current_instruction_context()?,
+                parameter_bytes.as_slice(),
+                &account_lengths,
+                invoke_context
+                    .feature_set
+                    .is_active(&do_support_realloc::id()),
+            )
+        });
         deserialize_time.stop();
+
+        // Update the timings
         let timings = &mut invoke_context.timings;
         timings.serialize_us = timings.serialize_us.saturating_add(serialize_time.as_us());
         timings.create_vm_us = timings.create_vm_us.saturating_add(create_vm_time.as_us());
@@ -1082,8 +1130,11 @@ impl Executor for BpfExecutor {
         timings.deserialize_us = timings
             .deserialize_us
             .saturating_add(deserialize_time.as_us());
-        stable_log::program_success(&log_collector, &program_id);
-        Ok(())
+
+        if execute_or_deserialize_result.is_ok() {
+            stable_log::program_success(&log_collector, &program_id);
+        }
+        execute_or_deserialize_result
     }
 }
 
