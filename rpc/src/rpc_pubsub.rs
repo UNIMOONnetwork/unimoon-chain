@@ -611,7 +611,7 @@ mod tests {
             transaction::{self, Transaction},
         },
         solana_stake_program::stake_state,
-        solana_vote_program::vote_state::{Vote, VoteTransaction},
+        solana_vote_program::vote_state::Vote,
         std::{
             sync::{
                 atomic::{AtomicBool, AtomicU64},
@@ -1315,7 +1315,7 @@ mod tests {
             hash: Hash::default(),
             timestamp: None,
         };
-        subscriptions.notify_vote(VoteTransaction::from(vote));
+        subscriptions.notify_vote(Box::new(vote));
 
         let response = receiver.recv();
         assert_eq!(

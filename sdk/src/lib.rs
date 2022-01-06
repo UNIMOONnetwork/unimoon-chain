@@ -46,7 +46,6 @@ pub mod signer;
 pub mod system_transaction;
 pub mod timing;
 pub mod transaction;
-pub mod transaction_context;
 pub mod transport;
 pub mod wasm;
 
@@ -104,15 +103,6 @@ macro_rules! program_stubs {
     () => {};
 }
 
-/// Convenience macro for `AddAssign` with saturating arithmetic.
-/// Replace by `std::num::Saturating` once stable
-#[macro_export]
-macro_rules! saturating_add_assign {
-    ($i:expr, $v:expr) => {{
-        $i = $i.saturating_add($v)
-    }};
-}
-
 #[macro_use]
 extern crate serde_derive;
 pub extern crate bs58;
@@ -120,18 +110,3 @@ extern crate log as logger;
 
 #[macro_use]
 extern crate solana_frozen_abi_macro;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_saturating_add_assign() {
-        let mut i = 0u64;
-        let v = 1;
-        saturating_add_assign!(i, v);
-        assert_eq!(i, 1);
-
-        i = u64::MAX;
-        saturating_add_assign!(i, v);
-        assert_eq!(i, u64::MAX);
-    }
-}

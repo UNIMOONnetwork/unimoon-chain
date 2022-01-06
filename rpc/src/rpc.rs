@@ -31,9 +31,7 @@ use {
     solana_faucet::faucet::request_airdrop_transaction,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_ledger::{
-        blockstore::{Blockstore, SignatureInfosForAddress},
-        blockstore_db::BlockstoreError,
-        get_tmp_ledger_path,
+        blockstore::Blockstore, blockstore_db::BlockstoreError, get_tmp_ledger_path,
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_metrics::inc_new_counter_info,
@@ -73,11 +71,9 @@ use {
         send_transaction_service::{SendTransactionService, TransactionInfo},
         tpu_info::NullTpuInfo,
     },
-    solana_storage_bigtable::Error as StorageError,
     solana_streamer::socket::SocketAddrSpace,
     solana_transaction_status::{
-        ConfirmedBlock, ConfirmedTransactionStatusWithSignature, Encodable,
-        EncodedConfirmedTransactionWithStatusMeta, Reward, RewardType,
+        ConfirmedBlock, EncodedConfirmedTransaction, Reward, RewardType,
         TransactionConfirmationStatus, TransactionStatus, UiConfirmedBlock, UiTransactionEncoding,
     },
     solana_vote_program::vote_state::{VoteState, MAX_LOCKOUT_HISTORY},
@@ -1358,7 +1354,7 @@ impl JsonRpcRequestProcessor {
         &self,
         signature: Signature,
         config: Option<RpcEncodingConfigWrapper<RpcTransactionConfig>>,
-    ) -> Result<Option<EncodedConfirmedTransactionWithStatusMeta>> {
+    ) -> Result<Option<EncodedConfirmedTransaction>> {
         let config = config
             .map(|config| config.convert_to_current())
             .unwrap_or_default();
@@ -1443,7 +1439,7 @@ impl JsonRpcRequestProcessor {
     pub async fn get_signatures_for_address(
         &self,
         address: Pubkey,
-        before: Option<Signature>,
+        mut before: Option<Signature>,
         until: Option<Signature>,
         mut limit: usize,
         commitment: Option<CommitmentConfig>,
@@ -1464,86 +1460,29 @@ impl JsonRpcRequestProcessor {
                 highest_confirmed_root
             };
 
-            let SignatureInfosForAddress {
-                infos: mut results,
-                found_before,
-            } = self
+            let mut results = self
                 .blockstore
                 .get_confirmed_signatures_for_address2(address, highest_slot, before, until, limit)
                 .map_err(|err| Error::invalid_params(format!("{}", err)))?;
 
-            let map_results = |results: Vec<ConfirmedTransactionStatusWithSignature>| {
-                results
-                    .into_iter()
-                    .map(|x| {
-                        let mut item: RpcConfirmedTransactionStatusWithSignature = x.into();
-                        if item.slot <= highest_confirmed_root {
-                            item.confirmation_status =
-                                Some(TransactionConfirmationStatus::Finalized);
-                        } else {
-                            item.confirmation_status =
-                                Some(TransactionConfirmationStatus::Confirmed);
-                            if item.block_time.is_none() {
-                                let r_bank_forks = self.bank_forks.read().unwrap();
-                                item.block_time = r_bank_forks
-                                    .get(item.slot)
-                                    .map(|bank| bank.clock().unix_timestamp);
-                            }
-                        }
-                        item
-                    })
-                    .collect()
-            };
-
             if results.len() < limit {
                 if let Some(bigtable_ledger_storage) = &self.bigtable_ledger_storage {
-                    let mut bigtable_before = before;
                     if !results.is_empty() {
                         limit -= results.len();
-                        bigtable_before = results.last().map(|x| x.signature);
-                    }
-
-                    // If the oldest address-signature found in Blockstore has not yet been
-                    // uploaded to long-term storage, modify the storage query to return all latest
-                    // signatures to prevent erroring on RowNotFound. This can race with upload.
-                    if found_before && bigtable_before.is_some() {
-                        match bigtable_ledger_storage
-                            .get_signature_status(&bigtable_before.unwrap())
-                            .await
-                        {
-                            Err(StorageError::SignatureNotFound) => {
-                                bigtable_before = None;
-                            }
-                            Err(err) => {
-                                warn!("{:?}", err);
-                                return Ok(map_results(results));
-                            }
-                            Ok(_) => {}
-                        }
+                        before = results.last().map(|x| x.signature);
                     }
 
                     let bigtable_results = bigtable_ledger_storage
                         .get_confirmed_signatures_for_address(
                             &address,
-                            bigtable_before.as_ref(),
+                            before.as_ref(),
                             until.as_ref(),
                             limit,
                         )
                         .await;
                     match bigtable_results {
                         Ok(bigtable_results) => {
-                            let results_set: HashSet<_> =
-                                results.iter().map(|result| result.signature).collect();
-                            for (bigtable_result, _) in bigtable_results {
-                                // In the upload race condition, latest address-signatures in
-                                // long-term storage may include original `before` signature...
-                                if before != Some(bigtable_result.signature)
-                                    // ...or earlier Blockstore signatures
-                                    && !results_set.contains(&bigtable_result.signature)
-                                {
-                                    results.push(bigtable_result);
-                                }
-                            }
+                            results.extend(bigtable_results.into_iter().map(|x| x.0));
                         }
                         Err(err) => {
                             warn!("{:?}", err);
@@ -1552,7 +1491,24 @@ impl JsonRpcRequestProcessor {
                 }
             }
 
-            Ok(map_results(results))
+            Ok(results
+                .into_iter()
+                .map(|x| {
+                    let mut item: RpcConfirmedTransactionStatusWithSignature = x.into();
+                    if item.slot <= highest_confirmed_root {
+                        item.confirmation_status = Some(TransactionConfirmationStatus::Finalized);
+                    } else {
+                        item.confirmation_status = Some(TransactionConfirmationStatus::Confirmed);
+                        if item.block_time.is_none() {
+                            let r_bank_forks = self.bank_forks.read().unwrap();
+                            item.block_time = r_bank_forks
+                                .get(item.slot)
+                                .map(|bank| bank.clock().unix_timestamp);
+                        }
+                    }
+                    item
+                })
+                .collect())
         } else {
             Err(RpcCustomError::TransactionHistoryNotAvailable.into())
         }
@@ -3214,7 +3170,7 @@ pub mod rpc_full {
             meta: Self::Metadata,
             signature_str: String,
             config: Option<RpcEncodingConfigWrapper<RpcTransactionConfig>>,
-        ) -> BoxFuture<Result<Option<EncodedConfirmedTransactionWithStatusMeta>>>;
+        ) -> BoxFuture<Result<Option<EncodedConfirmedTransaction>>>;
 
         #[rpc(meta, name = "getSignaturesForAddress")]
         fn get_signatures_for_address(
@@ -3689,7 +3645,7 @@ pub mod rpc_full {
             meta: Self::Metadata,
             signature_str: String,
             config: Option<RpcEncodingConfigWrapper<RpcTransactionConfig>>,
-        ) -> BoxFuture<Result<Option<EncodedConfirmedTransactionWithStatusMeta>>> {
+        ) -> BoxFuture<Result<Option<EncodedConfirmedTransaction>>> {
             debug!("get_transaction rpc request received: {:?}", signature_str);
             let signature = verify_signature(&signature_str);
             if let Err(err) = signature {
@@ -3928,7 +3884,7 @@ pub mod rpc_deprecated_v1_7 {
             meta: Self::Metadata,
             signature_str: String,
             config: Option<RpcEncodingConfigWrapper<RpcConfirmedTransactionConfig>>,
-        ) -> BoxFuture<Result<Option<EncodedConfirmedTransactionWithStatusMeta>>>;
+        ) -> BoxFuture<Result<Option<EncodedConfirmedTransaction>>>;
 
         // DEPRECATED
         #[rpc(meta, name = "getConfirmedSignaturesForAddress2")]
@@ -3998,7 +3954,7 @@ pub mod rpc_deprecated_v1_7 {
             meta: Self::Metadata,
             signature_str: String,
             config: Option<RpcEncodingConfigWrapper<RpcConfirmedTransactionConfig>>,
-        ) -> BoxFuture<Result<Option<EncodedConfirmedTransactionWithStatusMeta>>> {
+        ) -> BoxFuture<Result<Option<EncodedConfirmedTransaction>>> {
             debug!(
                 "get_confirmed_transaction rpc request received: {:?}",
                 signature_str
@@ -4295,8 +4251,13 @@ pub fn create_test_transactions_and_populate_blockstore(
     let entry_3 = solana_entry::entry::next_entry(&entry_2.hash, 1, vec![fail_tx]);
     let entries = vec![entry_1, entry_2, entry_3];
 
-    let shreds =
-        solana_ledger::blockstore::entries_to_test_shreds(&entries, slot, previous_slot, true, 0);
+    let shreds = solana_ledger::blockstore::entries_to_test_shreds(
+        entries.clone(),
+        slot,
+        previous_slot,
+        true,
+        0,
+    );
     blockstore.insert_shreds(shreds, None, false).unwrap();
     blockstore.set_roots(std::iter::once(&slot)).unwrap();
 
@@ -6314,7 +6275,6 @@ pub mod tests {
             mut genesis_config,
             mint_keypair,
             voting_keypair,
-            ..
         } = create_genesis_config(TEST_MINT_LAMPORTS);
 
         genesis_config.rent.lamports_per_byte_year = 50;

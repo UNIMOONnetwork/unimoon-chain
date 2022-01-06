@@ -3,7 +3,7 @@ use {
         bucket_item::BucketItem,
         bucket_map::BucketMapError,
         bucket_stats::BucketMapStats,
-        bucket_storage::{BucketStorage, Uid, DEFAULT_CAPACITY_POW2},
+        bucket_storage::{BucketStorage, Uid, DEFAULT_CAPACITY_POW2, UID_UNLOCKED},
         index_entry::IndexEntry,
         MaxSearch, RefCount,
     },
@@ -105,7 +105,7 @@ impl<T: Clone + Copy> Bucket<T> {
     pub fn keys(&self) -> Vec<Pubkey> {
         let mut rv = vec![];
         for i in 0..self.index.capacity() {
-            if self.index.is_free(i) {
+            if self.index.uid(i) == UID_UNLOCKED {
                 continue;
             }
             let ix: &IndexEntry = self.index.get(i);
@@ -121,7 +121,7 @@ impl<T: Clone + Copy> Bucket<T> {
         let mut result = Vec::with_capacity(self.index.count.load(Ordering::Relaxed) as usize);
         for i in 0..self.index.capacity() {
             let ii = i % self.index.capacity();
-            if self.index.is_free(ii) {
+            if self.index.uid(ii) == UID_UNLOCKED {
                 continue;
             }
             let ix: &IndexEntry = self.index.get(ii);
@@ -154,7 +154,7 @@ impl<T: Clone + Copy> Bucket<T> {
         let ix = Self::bucket_index_ix(index, key, random);
         for i in ix..ix + index.max_search() {
             let ii = i % index.capacity();
-            if index.is_free(ii) {
+            if index.uid(ii) == UID_UNLOCKED {
                 continue;
             }
             let elem: &mut IndexEntry = index.get_mut(ii);
@@ -173,7 +173,7 @@ impl<T: Clone + Copy> Bucket<T> {
         let ix = Self::bucket_index_ix(index, key, random);
         for i in ix..ix + index.max_search() {
             let ii = i % index.capacity();
-            if index.is_free(ii) {
+            if index.uid(ii) == UID_UNLOCKED {
                 continue;
             }
             let elem: &IndexEntry = index.get(ii);
@@ -185,7 +185,7 @@ impl<T: Clone + Copy> Bucket<T> {
     }
 
     fn bucket_create_key(
-        index: &mut BucketStorage,
+        index: &BucketStorage,
         key: &Pubkey,
         elem_uid: Uid,
         random: u64,
@@ -194,7 +194,7 @@ impl<T: Clone + Copy> Bucket<T> {
         let ix = Self::bucket_index_ix(index, key, random);
         for i in ix..ix + index.max_search() {
             let ii = i as u64 % index.capacity();
-            if !index.is_free(ii) {
+            if index.uid(ii) != UID_UNLOCKED {
                 continue;
             }
             index.allocate(ii, elem_uid, is_resizing).unwrap();
@@ -220,9 +220,9 @@ impl<T: Clone + Copy> Bucket<T> {
         Some(elem.ref_count)
     }
 
-    fn create_key(&mut self, key: &Pubkey) -> Result<u64, BucketMapError> {
+    fn create_key(&self, key: &Pubkey) -> Result<u64, BucketMapError> {
         Self::bucket_create_key(
-            &mut self.index,
+            &self.index,
             key,
             IndexEntry::key_uid(key),
             self.random,
@@ -257,16 +257,15 @@ impl<T: Clone + Copy> Bucket<T> {
             Some(res) => res,
         };
         elem.ref_count = ref_count;
-        let elem_uid = self.index.uid_unchecked(elem_ix);
+        let elem_uid = self.index.uid(elem_ix);
         let bucket_ix = elem.data_bucket_ix();
         let current_bucket = &self.data[bucket_ix as usize];
-        let num_slots = data.len() as u64;
         if best_fit_bucket == bucket_ix && elem.num_slots > 0 {
             // in place update
             let elem_loc = elem.data_loc(current_bucket);
             let slice: &mut [T] = current_bucket.get_mut_cell_slice(elem_loc, data.len() as u64);
-            assert_eq!(current_bucket.uid(elem_loc), Some(elem_uid));
-            elem.num_slots = num_slots;
+            assert!(current_bucket.uid(elem_loc) == elem_uid);
+            elem.num_slots = data.len() as u64;
             slice.copy_from_slice(data);
             Ok(())
         } else {
@@ -277,21 +276,18 @@ impl<T: Clone + Copy> Bucket<T> {
             let pos = thread_rng().gen_range(0, cap);
             for i in pos..pos + self.index.max_search() {
                 let ix = i % cap;
-                if best_bucket.is_free(ix) {
+                if best_bucket.uid(ix) == UID_UNLOCKED {
                     let elem_loc = elem.data_loc(current_bucket);
-                    let old_slots = elem.num_slots;
-                    elem.set_storage_offset(ix);
-                    elem.set_storage_capacity_when_created_pow2(best_bucket.capacity_pow2);
-                    elem.num_slots = num_slots;
-                    if old_slots > 0 {
-                        let current_bucket = &mut self.data[bucket_ix as usize];
+                    if elem.num_slots > 0 {
                         current_bucket.free(elem_loc, elem_uid);
                     }
+                    elem.set_storage_offset(ix);
+                    elem.set_storage_capacity_when_created_pow2(best_bucket.capacity_pow2);
+                    elem.num_slots = data.len() as u64;
                     //debug!(                        "DATA ALLOC {:?} {} {} {}",                        key, elem.data_location, best_bucket.capacity, elem_uid                    );
-                    if num_slots > 0 {
-                        let best_bucket = &mut self.data[best_fit_bucket as usize];
+                    if elem.num_slots > 0 {
                         best_bucket.allocate(ix, elem_uid, false).unwrap();
-                        let slice = best_bucket.get_mut_cell_slice(ix, num_slots);
+                        let slice = best_bucket.get_mut_cell_slice(ix, data.len() as u64);
                         slice.copy_from_slice(data);
                     }
                     return Ok(());
@@ -303,12 +299,10 @@ impl<T: Clone + Copy> Bucket<T> {
 
     pub fn delete_key(&mut self, key: &Pubkey) {
         if let Some((elem, elem_ix)) = self.find_entry(key) {
-            let elem_uid = self.index.uid_unchecked(elem_ix);
+            let elem_uid = self.index.uid(elem_ix);
             if elem.num_slots > 0 {
-                let ix = elem.data_bucket_ix() as usize;
-                let data_bucket = &self.data[ix];
+                let data_bucket = &self.data[elem.data_bucket_ix() as usize];
                 let loc = elem.data_loc(data_bucket);
-                let data_bucket = &mut self.data[ix];
                 //debug!(                    "DATA FREE {:?} {} {} {}",                    key, elem.data_location, data_bucket.capacity, elem_uid                );
                 data_bucket.free(loc, elem_uid);
             }
@@ -326,7 +320,7 @@ impl<T: Clone + Copy> Bucket<T> {
                 //increasing the capacity by ^4 reduces the
                 //likelyhood of a re-index collision of 2^(max_search)^2
                 //1 in 2^32
-                let mut index = BucketStorage::new_with_capacity(
+                let index = BucketStorage::new_with_capacity(
                     Arc::clone(&self.drives),
                     1,
                     std::mem::size_of::<IndexEntry>() as u64,
@@ -340,10 +334,9 @@ impl<T: Clone + Copy> Bucket<T> {
                 let mut valid = true;
                 for ix in 0..self.index.capacity() {
                     let uid = self.index.uid(ix);
-                    if let Some(uid) = uid {
+                    if UID_UNLOCKED != uid {
                         let elem: &IndexEntry = self.index.get(ix);
-                        let new_ix =
-                            Self::bucket_create_key(&mut index, &elem.key, uid, random, true);
+                        let new_ix = Self::bucket_create_key(&index, &elem.key, uid, random, true);
                         if new_ix.is_err() {
                             valid = false;
                             break;

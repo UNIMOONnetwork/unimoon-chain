@@ -37,7 +37,7 @@ fn bench_packet_discard(bencher: &mut Bencher) {
         .map(|_| {
             let mut addr = [0u16; 8];
             thread_rng().fill(&mut addr);
-            std::net::IpAddr::from(addr)
+            addr
         })
         .collect();
 
@@ -54,7 +54,7 @@ fn bench_packet_discard(bencher: &mut Bencher) {
         SigVerifyStage::discard_excess_packets(&mut batches, 10_000);
         for batch in batches.iter_mut() {
             for p in batch.packets.iter_mut() {
-                p.meta.set_discard(false);
+                p.meta.discard = false;
             }
         }
     });

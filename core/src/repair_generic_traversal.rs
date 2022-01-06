@@ -302,7 +302,7 @@ pub mod test {
                 blockhashes.insert(slot, entries.last().unwrap().hash);
 
                 let mut shreds = solana_ledger::blockstore::entries_to_test_shreds(
-                    &entries,
+                    entries.clone(),
                     slot,
                     parent.unwrap_or(slot),
                     is_slot_complete,

@@ -26,7 +26,6 @@ use {
         voting_service::VotingService,
     },
     crossbeam_channel::unbounded,
-    solana_accountsdb_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierLock,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         blockstore::Blockstore, blockstore_processor::TransactionStatusSender,
@@ -144,7 +143,6 @@ impl Tvu {
         cost_model: &Arc<RwLock<CostModel>>,
         accounts_package_channel: (AccountsPackageSender, AccountsPackageReceiver),
         last_full_snapshot_slot: Option<Slot>,
-        block_metadata_notifier: Option<BlockMetadataNotifierLock>,
     ) -> Self {
         let Sockets {
             repair: repair_socket,
@@ -335,7 +333,6 @@ impl Tvu {
             cost_update_sender,
             voting_sender,
             drop_bank_sender,
-            block_metadata_notifier,
         );
 
         let ledger_cleanup_service = tvu_config.max_ledger_shreds.map(|max_ledger_shreds| {
@@ -398,7 +395,6 @@ pub mod tests {
         solana_gossip::cluster_info::{ClusterInfo, Node},
         solana_ledger::{
             blockstore::BlockstoreSignals,
-            blockstore_db::BlockstoreOptions,
             create_new_tmp_ledger,
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
         },
@@ -439,7 +435,7 @@ pub mod tests {
             blockstore,
             ledger_signal_receiver,
             ..
-        } = Blockstore::open_with_signal(&blockstore_path, BlockstoreOptions::default())
+        } = Blockstore::open_with_signal(&blockstore_path, None, true)
             .expect("Expected to successfully open ledger");
         let blockstore = Arc::new(blockstore);
         let bank = bank_forks.working_bank();
@@ -504,7 +500,6 @@ pub mod tests {
             &Arc::new(MaxSlots::default()),
             &Arc::new(RwLock::new(CostModel::default())),
             accounts_package_channel,
-            None,
             None,
         );
         exit.store(true, Ordering::Relaxed);

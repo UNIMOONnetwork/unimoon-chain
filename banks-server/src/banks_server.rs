@@ -2,14 +2,9 @@ use {
     bincode::{deserialize, serialize},
     futures::{future, prelude::stream::StreamExt},
     solana_banks_interface::{
-        Banks, BanksRequest, BanksResponse, BanksTransactionResultWithSimulation,
-        TransactionConfirmationStatus, TransactionSimulationDetails, TransactionStatus,
+        Banks, BanksRequest, BanksResponse, TransactionConfirmationStatus, TransactionStatus,
     },
-    solana_runtime::{
-        bank::{Bank, TransactionSimulationResult},
-        bank_forks::BankForks,
-        commitment::BlockCommitmentCache,
-    },
+    solana_runtime::{bank::Bank, bank_forks::BankForks, commitment::BlockCommitmentCache},
     solana_sdk::{
         account::Account,
         clock::Slot,
@@ -20,7 +15,7 @@ use {
         message::{Message, SanitizedMessage},
         pubkey::Pubkey,
         signature::Signature,
-        transaction::{self, SanitizedTransaction, Transaction},
+        transaction::{self, Transaction},
     },
     solana_send_transaction_service::{
         send_transaction_service::{SendTransactionService, TransactionInfo},
@@ -40,7 +35,7 @@ use {
     tarpc::{
         context::Context,
         serde_transport::tcp,
-        server::{self, incoming::Incoming, Channel},
+        server::{self, Channel, Incoming},
         transport::{self, channel::UnboundedChannel},
         ClientMessage, Response,
     },
@@ -245,47 +240,6 @@ impl Banks for BanksServer {
 
     async fn get_block_height_with_context(self, _: Context, commitment: CommitmentLevel) -> u64 {
         self.bank(commitment).block_height()
-    }
-
-    async fn process_transaction_with_preflight_and_commitment_and_context(
-        self,
-        ctx: Context,
-        transaction: Transaction,
-        commitment: CommitmentLevel,
-    ) -> BanksTransactionResultWithSimulation {
-        let sanitized_transaction =
-            match SanitizedTransaction::try_from_legacy_transaction(transaction.clone()) {
-                Err(err) => {
-                    return BanksTransactionResultWithSimulation {
-                        result: Some(Err(err)),
-                        simulation_details: None,
-                    };
-                }
-                Ok(tx) => tx,
-            };
-        if let TransactionSimulationResult {
-            result: Err(err),
-            logs,
-            post_simulation_accounts: _,
-            units_consumed,
-        } = self
-            .bank(commitment)
-            .simulate_transaction_unchecked(sanitized_transaction)
-        {
-            return BanksTransactionResultWithSimulation {
-                result: Some(Err(err)),
-                simulation_details: Some(TransactionSimulationDetails {
-                    logs,
-                    units_consumed,
-                }),
-            };
-        }
-        BanksTransactionResultWithSimulation {
-            result: self
-                .process_transaction_with_commitment_and_context(ctx, transaction, commitment)
-                .await,
-            simulation_details: None,
-        }
     }
 
     async fn process_transaction_with_commitment_and_context(

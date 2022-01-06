@@ -304,7 +304,9 @@ mod tests {
                 num_readonly_unsigned_accounts: 0,
             },
             recent_blockhash: Hash::new_unique(),
-            account_keys: vec![Pubkey::new_unique()],
+            account_keys: vec![
+                Pubkey::new_unique(),
+            ],
             address_table_lookups: vec![
                 MessageAddressTableLookup {
                     account_key: Pubkey::new_unique(),

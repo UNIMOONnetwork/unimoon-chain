@@ -14,15 +14,14 @@ use {
     },
     solana_measure::measure::Measure,
     solana_metrics::{datapoint_error, inc_new_counter_debug},
-    solana_program_runtime::timings::ExecuteTimings,
     solana_rayon_threadlimit::get_thread_count,
     solana_runtime::{
         accounts_db::{AccountShrinkThreshold, AccountsDbConfig},
         accounts_index::AccountSecondaryIndexes,
         accounts_update_notifier_interface::AccountsUpdateNotifier,
         bank::{
-            Bank, RentDebits, TransactionBalancesSet, TransactionExecutionResult,
-            TransactionResults,
+            Bank, ExecuteTimings, InnerInstructionsList, RentDebits, TransactionBalancesSet,
+            TransactionExecutionResult, TransactionLogMessages, TransactionResults,
         },
         bank_forks::BankForks,
         bank_utils,
@@ -176,14 +175,15 @@ fn execute_batch(
 
     let pre_process_units: u64 = aggregate_total_execution_units(timings);
 
-    let (tx_results, balances) = batch.bank().load_execute_and_commit_transactions(
-        batch,
-        MAX_PROCESSING_AGE,
-        transaction_status_sender.is_some(),
-        transaction_status_sender.is_some(),
-        transaction_status_sender.is_some(),
-        timings,
-    );
+    let (tx_results, balances, inner_instructions, transaction_logs) =
+        batch.bank().load_execute_and_commit_transactions(
+            batch,
+            MAX_PROCESSING_AGE,
+            transaction_status_sender.is_some(),
+            transaction_status_sender.is_some(),
+            transaction_status_sender.is_some(),
+            timings,
+        );
 
     if bank
         .feature_set
@@ -238,6 +238,8 @@ fn execute_batch(
             execution_results,
             balances,
             token_balances,
+            inner_instructions,
+            transaction_logs,
             rent_debits,
         );
     }
@@ -1397,9 +1399,11 @@ pub enum TransactionStatusMessage {
 pub struct TransactionStatusBatch {
     pub bank: Arc<Bank>,
     pub transactions: Vec<SanitizedTransaction>,
-    pub execution_results: Vec<TransactionExecutionResult>,
+    pub statuses: Vec<TransactionExecutionResult>,
     pub balances: TransactionBalancesSet,
     pub token_balances: TransactionTokenBalancesSet,
+    pub inner_instructions: Option<Vec<Option<InnerInstructionsList>>>,
+    pub transaction_logs: Option<Vec<Option<TransactionLogMessages>>>,
     pub rent_debits: Vec<RentDebits>,
 }
 
@@ -1414,28 +1418,29 @@ impl TransactionStatusSender {
         &self,
         bank: Arc<Bank>,
         transactions: Vec<SanitizedTransaction>,
-        mut execution_results: Vec<TransactionExecutionResult>,
+        statuses: Vec<TransactionExecutionResult>,
         balances: TransactionBalancesSet,
         token_balances: TransactionTokenBalancesSet,
+        inner_instructions: Vec<Option<InnerInstructionsList>>,
+        transaction_logs: Vec<Option<TransactionLogMessages>>,
         rent_debits: Vec<RentDebits>,
     ) {
         let slot = bank.slot();
-        if !self.enable_cpi_and_log_storage {
-            execution_results.iter_mut().for_each(|execution_result| {
-                if let TransactionExecutionResult::Executed(details) = execution_result {
-                    details.log_messages.take();
-                    details.inner_instructions.take();
-                }
-            });
-        }
+        let (inner_instructions, transaction_logs) = if !self.enable_cpi_and_log_storage {
+            (None, None)
+        } else {
+            (Some(inner_instructions), Some(transaction_logs))
+        };
         if let Err(e) = self
             .sender
             .send(TransactionStatusMessage::Batch(TransactionStatusBatch {
                 bank,
                 transactions,
-                execution_results,
+                statuses,
                 balances,
                 token_balances,
+                inner_instructions,
+                transaction_logs,
                 rent_debits,
             }))
         {
@@ -3478,6 +3483,8 @@ pub mod tests {
                 ..
             },
             _balances,
+            _inner_instructions,
+            _log_messages,
         ) = batch.bank().load_execute_and_commit_transactions(
             &batch,
             MAX_PROCESSING_AGE,

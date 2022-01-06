@@ -3,21 +3,11 @@
 mkdir -p "$(dirname "$0")"/../dependencies
 cd "$(dirname "$0")"/../dependencies
 
-unameOut="$(uname -s)"
-case "${unameOut}" in
-  Linux*)
-    criterion_suffix=
-    machine=linux;;
-  Darwin*)
-    criterion_suffix=
-    machine=osx;;
-  MINGW*)
-    criterion_suffix=-mingw
-    machine=windows;;
-  *)
-    criterion_suffix=
-    machine=linux
-esac
+if [[ "$(uname)" = Darwin ]]; then
+  machine=osx
+else
+  machine=linux
+fi
 
 download() {
   declare url="$1/$2/$3"
@@ -90,7 +80,7 @@ if [[ ! -e criterion-$version.md || ! -e criterion ]]; then
     job="download \
            https://github.com/Snaipe/Criterion/releases/download \
            $version \
-           criterion-$version-$machine$criterion_suffix-x86_64.tar.bz2 \
+           criterion-$version-$machine-x86_64.tar.bz2 \
            criterion"
     get $version criterion "$job"
   )
@@ -102,7 +92,7 @@ if [[ ! -e criterion-$version.md || ! -e criterion ]]; then
 fi
 
 # Install Rust-BPF
-version=v1.21
+version=v1.20
 if [[ ! -e bpf-tools-$version.md || ! -e bpf-tools ]]; then
   (
     set -e
