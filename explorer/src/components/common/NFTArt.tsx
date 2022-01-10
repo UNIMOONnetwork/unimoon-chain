@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Stream, StreamPlayerApi } from "@cloudflare/stream-react";
+import { useEffect, useState } from "react";
+import { StreamPlayerApi } from "@cloudflare/stream-react";
 import { PublicKey } from "@solana/web3.js";
 import {
   programs,
@@ -112,13 +112,13 @@ const VideoArtContent = ({
   animationURL?: string;
   active?: boolean;
 }) => {
-  const [playerApi, setPlayerApi] = useState<StreamPlayerApi>();
-  const playerRef = useCallback(
-    (ref) => {
-      setPlayerApi(ref);
-    },
-    [setPlayerApi]
-  );
+  const [playerApi, ] = useState<StreamPlayerApi>();
+  // const playerRef = useCallback(
+  //   (ref) => {
+  //     setPlayerApi(ref);
+  //   },
+  //   [setPlayerApi]
+  // );
 
   useEffect(() => {
     if (playerApi) {
@@ -136,29 +136,7 @@ const VideoArtContent = ({
   })?.[0] as string;
 
   const content =
-    likelyVideo &&
-    likelyVideo.startsWith("https://watch.videodelivery.net/") ? (
-      <div className={"d-block"}>
-        <Stream
-          streamRef={(e: any) => playerRef(e)}
-          src={likelyVideo.replace("https://watch.videodelivery.net/", "")}
-          loop={true}
-          height={180}
-          width={320}
-          controls={false}
-          style={{ borderRadius: 12 }}
-          videoDimensions={{
-            videoWidth: 320,
-            videoHeight: 180,
-          }}
-          autoplay={true}
-          muted={true}
-        />
-        <ViewOriginalArtContentLink
-          src={likelyVideo.replace("https://watch.videodelivery.net/", "")}
-        />
-      </div>
-    ) : (
+    (
       <div className={"d-block"}>
         <video
           playsInline={true}

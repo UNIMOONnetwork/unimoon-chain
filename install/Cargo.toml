@@ -41,3 +41,7 @@ winreg = "0.10"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
+
+[[bin]]
+name = "unimoon-install"
+path = "src/main.rs"

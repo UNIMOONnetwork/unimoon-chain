@@ -41,7 +41,8 @@ function App() {
           />
           <Route
             exact
-            path={["/tx/inspector", "/tx/:signature/inspect"]}
+            // path={["/tx/inspector", "/tx/:signature/inspect"]}
+            path={"/tx/:signature/inspect"}
             render={({ match }) => (
               <TransactionInspectorPage signature={match.params.signature} />
             )}
@@ -60,7 +61,8 @@ function App() {
           />
           <Route
             exact
-            path={["/block/:id", "/block/:id/:tab"]}
+            path={"/block/:id/:tab"}
+            // path={["/block/:id", "/block/:id/:tab"]}
             render={({ match }) => (
               <BlockDetailsPage slot={match.params.id} tab={match.params.tab} />
             )}
@@ -81,7 +83,8 @@ function App() {
           />
           <Route
             exact
-            path={["/address/:address", "/address/:address/:tab"]}
+            path={"/address/:address/:tab"}
+            // path={["/address/:address", "/address/:address/:tab"]}
             render={({ match }) => (
               <AccountDetailsPage
                 address={match.params.address}

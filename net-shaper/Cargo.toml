@@ -18,7 +18,7 @@ solana-logger = { path = "../logger", version = "=1.10.0" }
 rand = "0.7.0"
 
 [[bin]]
-name = "solana-net-shaper"
+name = "unimoon-net-shaper"
 path = "src/main.rs"
 
 [package.metadata.docs.rs]
