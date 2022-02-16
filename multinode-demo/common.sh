@@ -28,9 +28,9 @@ if [[ -n $USE_INSTALL || ! -f "$SOLANA_ROOT"/Cargo.toml ]]; then
   solana_program() {
     declare program="$1"
     if [[ -z $program ]]; then
-      printf "solana"
+      printf "unimoon"
     else
-      printf "solana-%s" "$program"
+      printf "unimoon-%s" "$program"
     fi
   }
 else
@@ -39,9 +39,9 @@ else
     declare crate="$program"
     if [[ -z $program ]]; then
       crate="cli"
-      program="solana"
+      program="unimoon"
     else
-      program="solana-$program"
+      program="unimoon-$program"
     fi
 
     if [[ -n $NDEBUG ]]; then
