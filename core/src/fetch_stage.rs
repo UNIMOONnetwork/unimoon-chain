@@ -5,18 +5,18 @@ use {
         banking_stage::HOLD_TRANSACTIONS_SLOT_OFFSET,
         result::{Error, Result},
     },
+    crossbeam_channel::{unbounded, RecvTimeoutError},
     solana_metrics::{inc_new_counter_debug, inc_new_counter_info},
     solana_perf::{packet::PacketBatchRecycler, recycler::Recycler},
     solana_poh::poh_recorder::PohRecorder,
-    solana_sdk::clock::DEFAULT_TICKS_PER_SLOT,
+    solana_sdk::{
+        clock::DEFAULT_TICKS_PER_SLOT,
+        packet::{Packet, PacketFlags},
+    },
     solana_streamer::streamer::{self, PacketBatchReceiver, PacketBatchSender},
     std::{
         net::UdpSocket,
-        sync::{
-            atomic::AtomicBool,
-            mpsc::{channel, RecvTimeoutError},
-            Arc, Mutex,
-        },
+        sync::{atomic::AtomicBool, Arc, Mutex},
         thread::{self, Builder, JoinHandle},
     },
 };
@@ -35,8 +35,8 @@ impl FetchStage {
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         coalesce_ms: u64,
     ) -> (Self, PacketBatchReceiver, PacketBatchReceiver) {
-        let (sender, receiver) = channel();
-        let (vote_sender, vote_receiver) = channel();
+        let (sender, receiver) = unbounded();
+        let (vote_sender, vote_receiver) = unbounded();
         (
             Self::new_with_sender(
                 sockets,
@@ -83,10 +83,16 @@ impl FetchStage {
         sendr: &PacketBatchSender,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
     ) -> Result<()> {
-        let packet_batch = recvr.recv()?;
+        let mark_forwarded = |packet: &mut Packet| {
+            packet.meta.flags |= PacketFlags::FORWARDED;
+        };
+
+        let mut packet_batch = recvr.recv()?;
         let mut num_packets = packet_batch.packets.len();
+        packet_batch.packets.iter_mut().for_each(mark_forwarded);
         let mut packet_batches = vec![packet_batch];
-        while let Ok(packet_batch) = recvr.try_recv() {
+        while let Ok(mut packet_batch) = recvr.try_recv() {
+            packet_batch.packets.iter_mut().for_each(mark_forwarded);
             num_packets += packet_batch.packets.len();
             packet_batches.push(packet_batch);
             // Read at most 1K transactions in a loop
@@ -115,7 +121,7 @@ impl FetchStage {
     }
 
     fn new_multi_socket(
-        sockets: Vec<Arc<UdpSocket>>,
+        tpu_sockets: Vec<Arc<UdpSocket>>,
         tpu_forwards_sockets: Vec<Arc<UdpSocket>>,
         tpu_vote_sockets: Vec<Arc<UdpSocket>>,
         exit: &Arc<AtomicBool>,
@@ -126,7 +132,7 @@ impl FetchStage {
     ) -> Self {
         let recycler: PacketBatchRecycler = Recycler::warmed(1000, 1024);
 
-        let tpu_threads = sockets.into_iter().map(|socket| {
+        let tpu_threads = tpu_sockets.into_iter().map(|socket| {
             streamer::receiver(
                 socket,
                 exit,
@@ -138,7 +144,7 @@ impl FetchStage {
             )
         });
 
-        let (forward_sender, forward_receiver) = channel();
+        let (forward_sender, forward_receiver) = unbounded();
         let tpu_forwards_threads = tpu_forwards_sockets.into_iter().map(|socket| {
             streamer::receiver(
                 socket,

@@ -51,7 +51,7 @@ $ solana-validator \
     --only-known-rpc \
     --ledger ledger \
     --rpc-port 8899 \
-    --dynamic-port-range 8000-8010 \
+    --dynamic-port-range 8000-8020 \
     --entrypoint entrypoint.devnet.solana.com:8001 \
     --entrypoint entrypoint2.devnet.solana.com:8001 \
     --entrypoint entrypoint3.devnet.solana.com:8001 \
@@ -103,7 +103,7 @@ $ solana-validator \
     --only-known-rpc \
     --ledger ledger \
     --rpc-port 8899 \
-    --dynamic-port-range 8000-8010 \
+    --dynamic-port-range 8000-8020 \
     --entrypoint entrypoint.testnet.solana.com:8001 \
     --entrypoint entrypoint2.testnet.solana.com:8001 \
     --entrypoint entrypoint3.testnet.solana.com:8001 \
@@ -126,9 +126,8 @@ A permissionless, persistent cluster for early token holders and launch partners
 - Tokens that are issued on Mainnet Beta are **real** SOL
 - If you have paid money to purchase/be issued tokens, such as through our
   CoinList auction, these tokens will be transferred on Mainnet Beta.
-  - Note: If you are using a non-command-line wallet such as
-    [Solflare](wallet-guide/solflare.md),
-    the wallet will always be connecting to Mainnet Beta.
+  - Note: If you are using a non-command-line wallet, the wallet will always be
+connecting to Mainnet Beta.
 - Gossip entrypoint for Mainnet Beta: `entrypoint.mainnet-beta.solana.com:8001`
 - Metrics environment variable for Mainnet Beta:
 
@@ -158,7 +157,7 @@ $ solana-validator \
     --ledger ledger \
     --rpc-port 8899 \
     --private-rpc \
-    --dynamic-port-range 8000-8010 \
+    --dynamic-port-range 8000-8020 \
     --entrypoint entrypoint.mainnet-beta.solana.com:8001 \
     --entrypoint entrypoint2.mainnet-beta.solana.com:8001 \
     --entrypoint entrypoint3.mainnet-beta.solana.com:8001 \

@@ -20,7 +20,7 @@ pub mod v0;
 /// Bit mask that indicates whether a serialized message is versioned.
 pub const MESSAGE_VERSION_PREFIX: u8 = 0x80;
 
-/// Message versions supported by the Solana runtime.
+/// Either a legacy message or a v0 message.
 ///
 /// # Serialization
 ///
@@ -43,24 +43,10 @@ impl VersionedMessage {
         }
     }
 
-    pub fn unmapped_keys(self) -> Vec<Pubkey> {
+    pub fn static_account_keys(&self) -> &[Pubkey] {
         match self {
-            Self::Legacy(message) => message.account_keys,
-            Self::V0(message) => message.account_keys,
-        }
-    }
-
-    pub fn unmapped_keys_iter(&self) -> impl Iterator<Item = &Pubkey> {
-        match self {
-            Self::Legacy(message) => message.account_keys.iter(),
-            Self::V0(message) => message.account_keys.iter(),
-        }
-    }
-
-    pub fn unmapped_keys_len(&self) -> usize {
-        match self {
-            Self::Legacy(message) => message.account_keys.len(),
-            Self::V0(message) => message.account_keys.len(),
+            Self::Legacy(message) => &message.account_keys,
+            Self::V0(message) => &message.account_keys,
         }
     }
 
@@ -75,6 +61,13 @@ impl VersionedMessage {
         match self {
             Self::Legacy(message) => message.recent_blockhash = recent_blockhash,
             Self::V0(message) => message.recent_blockhash = recent_blockhash,
+        }
+    }
+
+    pub fn instructions(&self) -> &[CompiledInstruction] {
+        match self {
+            Self::Legacy(message) => &message.instructions,
+            Self::V0(message) => &message.instructions,
         }
     }
 
@@ -304,9 +297,7 @@ mod tests {
                 num_readonly_unsigned_accounts: 0,
             },
             recent_blockhash: Hash::new_unique(),
-            account_keys: vec![
-                Pubkey::new_unique(),
-            ],
+            account_keys: vec![Pubkey::new_unique()],
             address_table_lookups: vec![
                 MessageAddressTableLookup {
                     account_key: Pubkey::new_unique(),

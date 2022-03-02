@@ -1,5 +1,5 @@
 [package]
-name = "solana-keygen"
+name = "unimoon-keygen"
 version = "1.10.0"
 description = "Solana key generation utility"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]
@@ -22,7 +22,7 @@ solana-version = { path = "../version", version = "=1.10.0" }
 tiny-bip39 = "0.8.2"
 
 [[bin]]
-name = "unimoon-keygen"
+name = "solana-keygen"
 path = "src/keygen.rs"
 
 [package.metadata.docs.rs]

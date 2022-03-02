@@ -35,7 +35,8 @@ use {
         transaction::Transaction,
     },
     solana_vote_program::{
-        vote_instruction::{self, withdraw, VoteError},
+        vote_error::VoteError,
+        vote_instruction::{self, withdraw},
         vote_state::{VoteAuthorize, VoteInit, VoteState},
     },
     std::sync::Arc,
@@ -350,7 +351,7 @@ impl VoteSubCommands for App<'_, '_> {
                         .index(2)
                         .value_name("RECIPIENT_ADDRESS")
                         .required(true),
-                        "The recipient of withdrawn SOL. "),
+                        "The recipient of withdrawn UNIMOON. "),
                 )
                 .arg(
                     Arg::with_name("amount")
@@ -359,7 +360,7 @@ impl VoteSubCommands for App<'_, '_> {
                         .takes_value(true)
                         .required(true)
                         .validator(is_amount_or_all)
-                        .help("The amount to withdraw, in SOL; accepts keyword ALL, which for this command means account balance minus rent-exempt minimum"),
+                        .help("The amount to withdraw, in UNIMOON; accepts keyword ALL, which for this command means account balance minus rent-exempt minimum"),
                 )
                 .arg(
                     Arg::with_name("authorized_withdrawer")
@@ -390,7 +391,7 @@ impl VoteSubCommands for App<'_, '_> {
                         .index(2)
                         .value_name("RECIPIENT_ADDRESS")
                         .required(true),
-                        "The recipient of all withdrawn SOL. "),
+                        "The recipient of all withdrawn UNIMOON. "),
                 )
                 .arg(
                     Arg::with_name("authorized_withdrawer")
@@ -1286,7 +1287,7 @@ pub fn process_withdraw_from_vote_account(
             let balance_remaining = current_balance.saturating_sub(withdraw_amount);
             if balance_remaining < minimum_balance && balance_remaining != 0 {
                 return Err(CliError::BadParameter(format!(
-                    "Withdraw amount too large. The vote account balance must be at least {} SOL to remain rent exempt", lamports_to_sol(minimum_balance)
+                    "Withdraw amount too large. The vote account balance must be at least {} UNIMOON to remain rent exempt", lamports_to_sol(minimum_balance)
                 ))
                 .into());
             }

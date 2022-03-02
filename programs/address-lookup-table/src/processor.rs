@@ -2,8 +2,8 @@ use {
     crate::{
         instruction::ProgramInstruction,
         state::{
-            AddressLookupTable, LookupTableMeta, ProgramState, LOOKUP_TABLE_MAX_ADDRESSES,
-            LOOKUP_TABLE_META_SIZE,
+            AddressLookupTable, LookupTableMeta, LookupTableStatus, ProgramState,
+            LOOKUP_TABLE_MAX_ADDRESSES, LOOKUP_TABLE_META_SIZE,
         },
     },
     solana_program_runtime::{ic_msg, invoke_context::InvokeContext},
@@ -15,13 +15,7 @@ use {
         keyed_account::keyed_account_at_index,
         program_utils::limited_deserialize,
         pubkey::{Pubkey, PUBKEY_BYTES},
-        slot_hashes::{SlotHashes, MAX_ENTRIES},
         system_instruction,
-        sysvar::{
-            clock::{self, Clock},
-            rent::{self, Rent},
-            slot_hashes,
-        },
     },
     std::convert::TryFrom,
 };
@@ -92,7 +86,7 @@ impl Processor {
         })?;
 
         let derivation_slot = {
-            let slot_hashes: SlotHashes = invoke_context.get_sysvar(&slot_hashes::id())?;
+            let slot_hashes = invoke_context.get_sysvar_cache().get_slot_hashes()?;
             if slot_hashes.get(&untrusted_recent_slot).is_some() {
                 Ok(untrusted_recent_slot)
             } else {
@@ -127,7 +121,7 @@ impl Processor {
         }
 
         let table_account_data_len = LOOKUP_TABLE_META_SIZE;
-        let rent: Rent = invoke_context.get_sysvar(&rent::id())?;
+        let rent = invoke_context.get_sysvar_cache().get_rent()?;
         let required_lamports = rent
             .minimum_balance(table_account_data_len)
             .max(1)
@@ -281,7 +275,7 @@ impl Processor {
             return Err(InstructionError::InvalidInstructionData);
         }
 
-        let clock: Clock = invoke_context.get_sysvar(&clock::id())?;
+        let clock = invoke_context.get_sysvar_cache().get_clock()?;
         if clock.slot != lookup_table.meta.last_extended_slot {
             lookup_table.meta.last_extended_slot = clock.slot;
             lookup_table.meta.last_extended_slot_start_index =
@@ -313,7 +307,7 @@ impl Processor {
             }
         }
 
-        let rent: Rent = invoke_context.get_sysvar(&rent::id())?;
+        let rent = invoke_context.get_sysvar_cache().get_rent()?;
         let required_lamports = rent
             .minimum_balance(new_table_data_len)
             .max(1)
@@ -367,7 +361,7 @@ impl Processor {
         let mut lookup_table_meta = lookup_table.meta;
         drop(lookup_table_account_ref);
 
-        let clock: Clock = invoke_context.get_sysvar(&clock::id())?;
+        let clock = invoke_context.get_sysvar_cache().get_clock()?;
         lookup_table_meta.deactivation_slot = clock.slot;
 
         AddressLookupTable::overwrite_meta_data(
@@ -419,26 +413,26 @@ impl Processor {
         if lookup_table.meta.authority != Some(*authority_account.unsigned_key()) {
             return Err(InstructionError::IncorrectAuthority);
         }
-        if lookup_table.meta.deactivation_slot == Slot::MAX {
-            ic_msg!(invoke_context, "Lookup table is not deactivated");
-            return Err(InstructionError::InvalidArgument);
-        }
 
-        // Assert that the deactivation slot is no longer recent to give in-flight transactions
-        // enough time to land and to remove indeterminism caused by transactions loading
-        // addresses in the same slot when a table is closed. This enforced delay has a side
-        // effect of not allowing lookup tables to be recreated at the same derived address
-        // because tables must be created at an address derived from a recent slot.
-        let slot_hashes: SlotHashes = invoke_context.get_sysvar(&slot_hashes::id())?;
-        if let Some(position) = slot_hashes.position(&lookup_table.meta.deactivation_slot) {
-            let expiration = MAX_ENTRIES.saturating_sub(position);
-            ic_msg!(
-                invoke_context,
-                "Table cannot be closed until its derivation slot expires in {} blocks",
-                expiration
-            );
-            return Err(InstructionError::InvalidArgument);
-        }
+        let sysvar_cache = invoke_context.get_sysvar_cache();
+        let clock = sysvar_cache.get_clock()?;
+        let slot_hashes = sysvar_cache.get_slot_hashes()?;
+
+        match lookup_table.meta.status(clock.slot, &slot_hashes) {
+            LookupTableStatus::Activated => {
+                ic_msg!(invoke_context, "Lookup table is not deactivated");
+                Err(InstructionError::InvalidArgument)
+            }
+            LookupTableStatus::Deactivating { remaining_blocks } => {
+                ic_msg!(
+                    invoke_context,
+                    "Table cannot be closed until it's fully deactivated in {} blocks",
+                    remaining_blocks
+                );
+                Err(InstructionError::InvalidArgument)
+            }
+            LookupTableStatus::Deactivated => Ok(()),
+        }?;
 
         drop(lookup_table_account_ref);
 

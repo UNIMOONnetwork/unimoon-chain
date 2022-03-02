@@ -30,7 +30,8 @@ plugin implementation for the PostgreSQL database.
 
 [`solana-accountsdb-plugin-interface`]: https://docs.rs/solana-accountsdb-plugin-interface
 [`solana-accountsdb-plugin-postgres`]: https://docs.rs/solana-accountsdb-plugin-postgres
-
+[`solana-sdk`]: https://docs.rs/solana-sdk
+[`solana-transaction-status`]: https://docs.rs/solana-transaction-status
 
 ## The Plugin Interface
 
@@ -57,7 +58,7 @@ pub unsafe extern "C" fn _create_plugin() -> *mut dyn AccountsDbPlugin {
 A plugin implementation can implement the `on_load` method to initialize itself.
 This function is invoked after a plugin is dynamically loaded into the validator
 when it starts. The configuration of the plugin is controlled by a configuration
-file in JSON format. The JSON file must have a field `libpath` that points
+file in JSON5 format. The JSON5 file must have a field `libpath` that points
 to the full path name of the shared library implementing the plugin, and may
 have other configuration information, like connection parameters for the external
 database. The plugin configuration file is specified by the validator's CLI
@@ -69,6 +70,21 @@ PostgreSQL plugin below for an example.
 
 The plugin can implement the `on_unload` method to do any cleanup before the
 plugin is unloaded when the validator is gracefully shutdown.
+
+The plugin framework supports streaming either accounts, transactions or both.
+A plugin uses the following function to indicate if it is interested in receiving
+account data:
+
+```
+fn account_data_notifications_enabled(&self) -> bool
+```
+
+And it uses the following function to indicate if it is interested in receiving
+transaction data:
+
+```
+    fn transaction_notifications_enabled(&self) -> bool
+```
 
 The following method is used for notifying on an account update:
 
@@ -115,6 +131,38 @@ To ensure data consistency, the plugin implementation can choose to abort
 the validator in case of error persisting to external stores. When the
 validator restarts the account data will be re-transmitted.
 
+The following method is used for notifying transactions:
+
+```
+    fn notify_transaction(
+        &mut self,
+        transaction: ReplicaTransactionInfoVersions,
+        slot: u64,
+    ) -> Result<()>
+```
+
+The `ReplicaTransactionInfoVersionsoVersions` struct
+contains the information about a streamed transaction. It wraps `ReplicaTransactionInfo`
+
+```
+pub struct ReplicaTransactionInfo<'a> {
+    /// The first signature of the transaction, used for identifying the transaction.
+    pub signature: &'a Signature,
+
+    /// Indicates if the transaction is a simple vote transaction.
+    pub is_vote: bool,
+
+    /// The sanitized transaction.
+    pub transaction: &'a SanitizedTransaction,
+
+    /// Metadata of the transaction status.
+    pub transaction_status_meta: &'a TransactionStatusMeta,
+}
+```
+For details of `SanitizedTransaction` and `TransactionStatusMeta `,
+please refer to [`solana-sdk`] and [`solana-transaction-status`]
+
+The `slot` points to the slot the transaction is executed at.
 For more details, please refer to the Rust documentation in
 [`solana-accountsdb-plugin-interface`].
 
@@ -193,6 +241,36 @@ To select all accounts, use the wildcard character (*):
     }
 ```
 
+### Transaction Selection
+
+`transaction_selector`, controls if and what transactions to store.
+If this field is missing, none of the transactions are stored.
+
+For example, one can use the following to select only the transactions
+referencing accounts with particular Base58-encoded Pubkeys,
+
+```
+"transaction_selector" : {
+    "mentions" : \["pubkey-1", "pubkey-2", ..., "pubkey-n"\],
+}
+```
+
+The `mentions` field supports wildcards to select all transaction or
+all 'vote' transactions. For example, to select all transactions:
+
+```
+"transaction_selector" : {
+    "mentions" : \["*"\],
+}
+```
+
+To select all vote transactions:
+
+```
+"transaction_selector" : {
+    "mentions" : \["all_votes"\],
+}
+```
 
 ### Database Setup
 
@@ -273,13 +351,13 @@ psql -U solana -p 5433 -h 10.138.0.9 -w -d solana
 
 #### Create the Schema Objects
 
-Use the [create_schema.sql](https://github.com/solana-labs/solana/blob/7ac43b16d2c766df61ae0a06d7aaf14ba61996ac/accountsdb-plugin-postgres/scripts/create_schema.sql)
+Use the [create_schema.sql](https://github.com/solana-labs/solana/blob/a70eb098f4ae9cd359c1e40bbb7752b3dd61de8d/accountsdb-plugin-postgres/scripts/create_schema.sql)
 to create the objects for storing accounts and slots.
 
 Download the script from github:
 
 ```
-wget https://raw.githubusercontent.com/solana-labs/solana/7ac43b16d2c766df61ae0a06d7aaf14ba61996ac/accountsdb-plugin-postgres/scripts/create_schema.sql
+wget https://raw.githubusercontent.com/solana-labs/solana/a70eb098f4ae9cd359c1e40bbb7752b3dd61de8d/accountsdb-plugin-postgres/scripts/create_schema.sql
 ```
 
 Then run the script:
@@ -294,7 +372,7 @@ argument mentioned above.
 #### Destroy the Schema Objects
 
 To destroy the database objects, created by `create_schema.sql`, use
-[drop_schema.sql](https://github.com/solana-labs/solana/blob/7ac43b16d2c766df61ae0a06d7aaf14ba61996ac/accountsdb-plugin-postgres/scripts/drop_schema.sql).
+[drop_schema.sql](https://github.com/solana-labs/solana/blob/a70eb098f4ae9cd359c1e40bbb7752b3dd61de8d/accountsdb-plugin-postgres/scripts/drop_schema.sql).
 For example,
 
 ```
@@ -303,8 +381,11 @@ psql -U solana -p 5433 -h 10.138.0.9 -w -d solana -f drop_schema.sql
 
 ### Capture Historical Account Data
 
-The account historical data is captured using a database trigger as shown in
-`create_schema.sql`,
+To capture account historical data, in the configuration file, turn
+`store_account_historical_data` to true.
+
+And ensure the database trigger is created to save data in the `audit_table` when
+records in `account` are updated, as shown in `create_schema.sql`,
 
 ```
 CREATE FUNCTION audit_account_update() RETURNS trigger AS $audit_account_update$
@@ -321,10 +402,7 @@ CREATE TRIGGER account_update_trigger AFTER UPDATE OR DELETE ON account
     FOR EACH ROW EXECUTE PROCEDURE audit_account_update();
 ```
 
-The historical data is stored in the account_audit table.
-
 The trigger can be dropped to disable this feature, for example,
-
 
 ```
 DROP TRIGGER account_update_trigger ON account;
@@ -332,7 +410,6 @@ DROP TRIGGER account_update_trigger ON account;
 
 Over time, the account_audit can accumulate large amount of data. You may choose to
 limit that by deleting older historical data.
-
 
 For example, the following SQL statement can be used to keep up to 1000 of the most
 recent records for an account:
@@ -345,6 +422,18 @@ delete from account_audit a2 where (pubkey, write_version) in
             from account_audit a) ranked
             where ranked.rnk > 1000)
 ```
+
+### Main Tables
+
+The following are the tables in the Postgres database
+
+| Table         | Description             |
+|:--------------|:------------------------|
+| account       | Account data            |
+| slot          | Slot metadata           |
+| transaction   | Transaction data        |
+| account_audit | Account historical data |
+
 
 ### Performance Considerations
 

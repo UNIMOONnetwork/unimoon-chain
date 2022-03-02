@@ -1,7 +1,9 @@
 extern crate walkdir;
 
-use std::{env, path::Path, process::Command};
-use walkdir::WalkDir;
+use {
+    std::{env, path::Path, process::Command},
+    walkdir::WalkDir,
+};
 
 fn rerun_if_changed(files: &[&str], directories: &[&str], excludes: &[&str]) {
     let mut all_files: Vec<_> = files.iter().map(|f| f.to_string()).collect();
@@ -91,10 +93,13 @@ fn main() {
             "sanity",
             "secp256k1_recover",
             "sha",
+            "sibling_inner_instruction",
+            "sibling_instruction",
             "spoof1",
             "spoof1_system",
             "upgradeable",
             "upgraded",
+            "zk_token_elgamal",
         ];
         for program in rust_programs.iter() {
             println!(

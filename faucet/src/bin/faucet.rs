@@ -20,7 +20,7 @@ async fn main() {
     let default_keypair = solana_cli_config::Config::default().keypair_path;
 
     solana_logger::setup_with_default("solana=info");
-    solana_metrics::set_panic_hook("faucet");
+    solana_metrics::set_panic_hook("faucet", /*version:*/ None);
     let matches = App::new(crate_name!())
         .about(crate_description!())
         .version(solana_version::version!())
@@ -47,20 +47,14 @@ async fn main() {
                 .alias("cap")
                 .value_name("NUM")
                 .takes_value(true)
-		// modified by alex to change native token name
-		// .help("Request limit for time slice, in SOL"),
-		.help("Request limit for time slice, in UNIMOON"),
-		// end modify
+                .help("Request limit for time slice, in UNIMOON"),
         )
         .arg(
             Arg::with_name("per_request_cap")
                 .long("per-request-cap")
                 .value_name("NUM")
                 .takes_value(true)
-		// modified by alex to change native token name
-                // .help("Request limit for a single request, in SOL"),
-		.help("Request limit for a single request, in UNIMOON"),
-		// end modify
+                .help("Request limit for a single request, in UNIMOON"),
         )
         .arg(
             Arg::with_name("allowed_ip")

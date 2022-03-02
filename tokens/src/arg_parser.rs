@@ -44,10 +44,7 @@ where
         )
         .subcommand(
             SubCommand::with_name("distribute-tokens")
-		// modified by alex to change native token name
-                // .about("Distribute SOL"
-		.about("Distribute SOL")
-		// end modify
+                .about("Distribute UNIMOON")
                 .arg(
                     Arg::with_name("db_path")
                         .long("db-path")
@@ -74,10 +71,7 @@ where
                         .takes_value(true)
                         .value_name("AMOUNT")
                         .validator(is_amount)
-			// modified by alex to change native token name
-                        //.help("The amount to send to each recipient, in SOL"),
-			.help("The amount to send to each recipient, in UNIMOON"),
-			// end modify
+                        .help("The amount to send to each recipient, in UNIMOON"),
                 )
                 .arg(
                     Arg::with_name("dry_run")
@@ -161,8 +155,8 @@ where
                         .default_value("1.0")
                         .long("unlocked-sol")
                         .takes_value(true)
-                        .value_name("SOL_AMOUNT")
-                        .help("Amount of SOL to put in system account to pay for fees"),
+                        .value_name("UNIMOON_AMOUNT")
+                        .help("Amount of UNIMOON to put in system account to pay for fees"),
                 )
                 .arg(
                     Arg::with_name("lockup_authority")
@@ -241,8 +235,8 @@ where
                         .default_value("1.0")
                         .long("unlocked-sol")
                         .takes_value(true)
-                        .value_name("SOL_AMOUNT")
-                        .help("Amount of SOL to put in system account to pay for fees"),
+                        .value_name("UNIMOON_AMOUNT")
+                        .help("Amount of UNIMOON to put in system account to pay for fees"),
                 )
                 .arg(
                     Arg::with_name("stake_authority")

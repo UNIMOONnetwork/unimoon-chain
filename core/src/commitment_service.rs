@@ -1,5 +1,6 @@
 use {
     crate::consensus::Stake,
+    crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
     solana_measure::measure::Measure,
     solana_metrics::datapoint_info,
     solana_rpc::rpc_subscriptions::RpcSubscriptions,
@@ -14,7 +15,6 @@ use {
         collections::HashMap,
         sync::{
             atomic::{AtomicBool, Ordering},
-            mpsc::{channel, Receiver, RecvTimeoutError, Sender},
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
@@ -63,7 +63,7 @@ impl AggregateCommitmentService {
         let (sender, receiver): (
             Sender<CommitmentAggregationData>,
             Receiver<CommitmentAggregationData>,
-        ) = channel();
+        ) = unbounded();
         let exit_ = exit.clone();
         (
             sender,
@@ -503,11 +503,7 @@ mod tests {
 
         let validator_vote_keypairs = ValidatorVoteKeypairs::new_rand();
         let validator_keypairs = vec![&validator_vote_keypairs];
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair: _,
-            voting_keypair: _,
-        } = create_genesis_config_with_vote_accounts(
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_vote_accounts(
             1_000_000_000,
             &validator_keypairs,
             vec![100; 1],

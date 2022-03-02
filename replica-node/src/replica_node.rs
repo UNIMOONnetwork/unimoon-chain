@@ -6,7 +6,7 @@ use {
     solana_genesis_utils::download_then_check_genesis_hash,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_ledger::{
-        blockstore::Blockstore, blockstore_db::AccessType, blockstore_processor,
+        blockstore::Blockstore, blockstore_db::BlockstoreOptions, blockstore_processor,
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_replica_lib::accountsdb_repl_client::AccountsDbReplClientServiceConfig,
@@ -146,7 +146,7 @@ fn initialize_from_snapshot(
         OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
 
     let mut block_commitment_cache = BlockCommitmentCache::default();
-    block_commitment_cache.initialize_slots(bank0_slot);
+    block_commitment_cache.initialize_slots(bank0_slot, bank0_slot);
     let block_commitment_cache = Arc::new(RwLock::new(block_commitment_cache));
 
     ReplicaBankInfo {
@@ -175,11 +175,12 @@ fn start_client_rpc_services(
         block_commitment_cache,
     } = bank_info;
     let blockstore = Arc::new(
-        Blockstore::open_with_access_type(
+        Blockstore::open_with_options(
             &replica_config.ledger_path,
-            AccessType::PrimaryOnly,
-            None,
-            false,
+            BlockstoreOptions {
+                enforce_ulimit_nofile: false,
+                ..BlockstoreOptions::default()
+            },
         )
         .unwrap(),
     );

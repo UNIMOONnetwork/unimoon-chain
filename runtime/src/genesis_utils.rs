@@ -24,6 +24,25 @@ pub fn bootstrap_validator_stake_lamports() -> u64 {
     StakeState::get_rent_exempt_reserve(&Rent::default())
 }
 
+// Number of lamports automatically used for genesis accounts
+pub const fn genesis_sysvar_and_builtin_program_lamports() -> u64 {
+    const NUM_BUILTIN_PROGRAMS: u64 = 4;
+    const FEES_SYSVAR_MIN_BALANCE: u64 = 946_560;
+    const STAKE_HISTORY_MIN_BALANCE: u64 = 114_979_200;
+    const CLOCK_SYSVAR_MIN_BALANCE: u64 = 1_169_280;
+    const RENT_SYSVAR_MIN_BALANCE: u64 = 1_009_200;
+    const EPOCH_SCHEDULE_SYSVAR_MIN_BALANCE: u64 = 1_120_560;
+    const RECENT_BLOCKHASHES_SYSVAR_MIN_BALANCE: u64 = 42_706_560;
+
+    FEES_SYSVAR_MIN_BALANCE
+        + STAKE_HISTORY_MIN_BALANCE
+        + CLOCK_SYSVAR_MIN_BALANCE
+        + RENT_SYSVAR_MIN_BALANCE
+        + EPOCH_SCHEDULE_SYSVAR_MIN_BALANCE
+        + RECENT_BLOCKHASHES_SYSVAR_MIN_BALANCE
+        + NUM_BUILTIN_PROGRAMS
+}
+
 pub struct ValidatorVoteKeypairs {
     pub node_keypair: Keypair,
     pub vote_keypair: Keypair,
@@ -52,6 +71,7 @@ pub struct GenesisConfigInfo {
     pub genesis_config: GenesisConfig,
     pub mint_keypair: Keypair,
     pub voting_keypair: Keypair,
+    pub validator_pubkey: Pubkey,
 }
 
 pub fn create_genesis_config(mint_lamports: u64) -> GenesisConfigInfo {
@@ -84,10 +104,11 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
     let voting_keypair =
         Keypair::from_bytes(&voting_keypairs[0].borrow().vote_keypair.to_bytes()).unwrap();
 
+    let validator_pubkey = voting_keypairs[0].borrow().node_keypair.pubkey();
     let genesis_config = create_genesis_config_with_leader_ex(
         mint_lamports,
         &mint_keypair.pubkey(),
-        &voting_keypairs[0].borrow().node_keypair.pubkey(),
+        &validator_pubkey,
         &voting_keypairs[0].borrow().vote_keypair.pubkey(),
         &voting_keypairs[0].borrow().stake_keypair.pubkey(),
         stakes[0],
@@ -102,6 +123,7 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
         genesis_config,
         mint_keypair,
         voting_keypair,
+        validator_pubkey,
     };
 
     for (validator_voting_keypairs, stake) in voting_keypairs[1..].iter().zip(&stakes[1..]) {
@@ -159,6 +181,7 @@ pub fn create_genesis_config_with_leader(
         genesis_config,
         mint_keypair,
         voting_keypair,
+        validator_pubkey: *validator_pubkey,
     }
 }
 

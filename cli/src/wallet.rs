@@ -39,7 +39,7 @@ use {
         system_program,
         transaction::Transaction,
     },
-    solana_transaction_status::{EncodedTransaction, UiTransactionEncoding},
+    solana_transaction_status::{Encodable, EncodedTransaction, UiTransactionEncoding},
     std::{fmt::Write as FmtWrite, fs::File, io::Write, sync::Arc},
 };
 
@@ -72,10 +72,7 @@ impl WalletSubCommands for App<'_, '_> {
                     Arg::with_name("lamports")
                         .long("lamports")
                         .takes_value(false)
-			// modified by alex to change native token name
-                        // .help("Display balance in lamports instead of SOL"),
-			.help("Display balance in lamports instead of UNIMOON"),
-			// end modify
+                        .help("Display balance in lamports instead of UNIMOON"),
                 ),
         )
         .subcommand(
@@ -90,7 +87,7 @@ impl WalletSubCommands for App<'_, '_> {
         )
         .subcommand(
             SubCommand::with_name("airdrop")
-                .about("Request SOL from a faucet")
+                .about("Request UNIMOON from a faucet")
                 .arg(
                     Arg::with_name("amount")
                         .index(1)
@@ -98,10 +95,7 @@ impl WalletSubCommands for App<'_, '_> {
                         .takes_value(true)
                         .validator(is_amount)
                         .required(true)
-			// modified by alex to change native token name
-                        // .help("The airdrop amount to request, in SOL"),
-			.help("The airdrop amount to request, in UNIMOON"),
-			// end modify
+                        .help("The airdrop amount to request, in UNIMOON"),
                 )
                 .arg(
                     pubkey!(Arg::with_name("to")
@@ -123,10 +117,7 @@ impl WalletSubCommands for App<'_, '_> {
                     Arg::with_name("lamports")
                         .long("lamports")
                         .takes_value(false)
-			// modified by alex to change native token name
-                        // .help("Display balance in lamports instead of SOL"),
-			.help("Display balance in lamports instead of UNIMOON"),
-			// end modify
+                        .help("Display balance in lamports instead of UNIMOON"),
                 ),
         )
         .subcommand(
@@ -236,7 +227,7 @@ impl WalletSubCommands for App<'_, '_> {
                         .takes_value(true)
                         .validator(is_amount_or_all)
                         .required(true)
-                        .help("The amount to send, in SOL; accepts keyword ALL"),
+                        .help("The amount to send, in UNIMOON; accepts keyword ALL"),
                 )
                 .arg(
                     pubkey!(Arg::with_name("from")
@@ -282,11 +273,14 @@ impl WalletSubCommands for App<'_, '_> {
 }
 
 fn resolve_derived_address_program_id(matches: &ArgMatches<'_>, arg_name: &str) -> Option<Pubkey> {
-    matches.value_of(arg_name).and_then(|v| match v {
-        "NONCE" => Some(system_program::id()),
-        "STAKE" => Some(stake::program::id()),
-        "VOTE" => Some(solana_vote_program::id()),
-        _ => pubkey_of(matches, arg_name),
+    matches.value_of(arg_name).and_then(|v| {
+        let upper = v.to_ascii_uppercase();
+        match upper.as_str() {
+            "NONCE" | "SYSTEM" => Some(system_program::id()),
+            "STAKE" => Some(stake::program::id()),
+            "VOTE" => Some(solana_vote_program::id()),
+            _ => pubkey_of(matches, arg_name),
+        }
     })
 }
 
@@ -573,10 +567,8 @@ pub fn process_confirm(
                                 .transaction
                                 .decode()
                                 .expect("Successful decode");
-                            let json_transaction = EncodedTransaction::encode(
-                                decoded_transaction.clone(),
-                                UiTransactionEncoding::Json,
-                            );
+                            let json_transaction =
+                                decoded_transaction.encode(UiTransactionEncoding::Json);
 
                             transaction = Some(CliTransaction {
                                 transaction: json_transaction,
@@ -618,7 +610,7 @@ pub fn process_decode_transaction(config: &CliConfig, transaction: &Transaction)
     let sigverify_status = CliSignatureVerificationStatus::verify_transaction(transaction);
     let decode_transaction = CliTransaction {
         decoded_transaction: transaction.clone(),
-        transaction: EncodedTransaction::encode(transaction.clone(), UiTransactionEncoding::Json),
+        transaction: transaction.encode(UiTransactionEncoding::Json),
         meta: None,
         block_time: None,
         slot: None,

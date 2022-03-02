@@ -41,12 +41,15 @@ function App() {
           />
           <Route
             exact
-            // path={["/tx/inspector", "/tx/:signature/inspect"]}
-            path={"/tx/:signature/inspect"}
-            render={({ match }) => (
-              <TransactionInspectorPage signature={match.params.signature} />
-            )}
+            path={["/tx/inspector", "/tx/:signature/inspect"]}            
+            render={({ match }) => {
+              const signature = Object.getOwnPropertyDescriptor(match.params, 'signature')
+              return (
+                <TransactionInspectorPage signature={signature ? signature.value : undefined} />
+              )
+            }}
           />
+          
           <Route
             exact
             path={"/tx/:signature"}
@@ -61,11 +64,17 @@ function App() {
           />
           <Route
             exact
-            path={"/block/:id/:tab"}
-            // path={["/block/:id", "/block/:id/:tab"]}
-            render={({ match }) => (
-              <BlockDetailsPage slot={match.params.id} tab={match.params.tab} />
-            )}
+            path={["/block/:id", "/block/:id/:tab"]}            
+            render={({ match }) => {
+              const tab = Object.getOwnPropertyDescriptor(match.params, 'tab')
+              return (
+                <BlockDetailsPage 
+                  slot={match.params.id}
+                  tab={tab ? tab.value : undefined}
+                />
+              )
+              
+            }}
           />
           <Route
             exact
@@ -81,17 +90,21 @@ function App() {
               return <Redirect to={{ ...location, pathname }} />;
             }}
           />
+         
           <Route
             exact
-            path={"/address/:address/:tab"}
-            // path={["/address/:address", "/address/:address/:tab"]}
-            render={({ match }) => (
-              <AccountDetailsPage
-                address={match.params.address}
-                tab={match.params.tab}
-              />
-            )}
-          />
+            path={["/address/:address", "/address/:address/:tab"]}            
+            render={({ match }) => {
+              const tab = Object.getOwnPropertyDescriptor(match.params, 'tab')
+              return (
+                <AccountDetailsPage
+                  address={match.params.address}
+                  tab={tab ? tab.value : undefined}
+                />
+              )
+            }}
+          />          
+
           <Route exact path="/">
             <ClusterStatsPage />
           </Route>

@@ -135,32 +135,31 @@ const VideoArtContent = ({
     return arr.length >= 2 ? index === 1 : index === 0;
   })?.[0] as string;
 
-  const content =
-    (
-      <div className={"d-block"}>
-        <video
-          playsInline={true}
-          autoPlay={true}
-          muted={true}
-          controls={true}
-          controlsList="nodownload"
-          style={{ borderRadius: 12, width: 320, height: 180 }}
-          loop={true}
-          poster={uri}
-        >
-          {likelyVideo && <source src={likelyVideo} type="video/mp4" />}
-          {animationURL && <source src={animationURL} type="video/mp4" />}
-          {files
-            ?.filter((f) => typeof f !== "string")
-            .map((f: any, index: number) => (
-              <source key={index} src={f.uri} type={f.type} />
-            ))}
-        </video>
-        {(likelyVideo || animationURL) && (
-          <ViewOriginalArtContentLink src={(likelyVideo || animationURL)!} />
-        )}
-      </div>
-    );
+  const content = (
+    <div className={"d-block"}>
+      <video
+        playsInline={true}
+        autoPlay={true}
+        muted={true}
+        controls={true}
+        controlsList="nodownload"
+        style={{ borderRadius: 12, width: 320, height: 180 }}
+        loop={true}
+        poster={uri}
+      >
+        {likelyVideo && <source src={likelyVideo} type="video/mp4" />}
+        {animationURL && <source src={animationURL} type="video/mp4" />}
+        {files
+          ?.filter((f) => typeof f !== "string")
+          .map((f: any, index: number) => (
+            <source key={index} src={f.uri} type={f.type} />
+          ))}
+      </video>
+      {(likelyVideo || animationURL) && (
+        <ViewOriginalArtContentLink src={(likelyVideo || animationURL)!} />
+      )}
+    </div>
+  );
 
   return content;
 };

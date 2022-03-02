@@ -1,6 +1,7 @@
 //! The `net_utils` module assists with networking
 #![allow(clippy::integer_arithmetic)]
 use {
+    crossbeam_channel::unbounded,
     log::*,
     rand::{thread_rng, Rng},
     socket2::{Domain, SockAddr, Socket, Type},
@@ -8,7 +9,7 @@ use {
         collections::{BTreeMap, HashSet},
         io::{self, Read, Write},
         net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket},
-        sync::{mpsc::channel, Arc, RwLock},
+        sync::{Arc, RwLock},
         time::{Duration, Instant},
     },
     url::Url,
@@ -138,7 +139,7 @@ fn do_verify_reachable_ports(
 
     // Wait for a connection to open on each TCP port
     for (port, tcp_listener) in tcp_listeners {
-        let (sender, receiver) = channel();
+        let (sender, receiver) = unbounded();
         let listening_addr = tcp_listener.local_addr().unwrap();
         let thread_handle = std::thread::spawn(move || {
             debug!("Waiting for incoming connection on tcp/{}", port);
@@ -501,6 +502,34 @@ pub fn bind_common(
     let sock_addr = SockAddr::from(addr);
     sock.bind(&sock_addr)
         .and_then(|_| TcpListener::bind(&addr).map(|listener| (sock.into(), listener)))
+}
+
+pub fn bind_two_consecutive_in_range(
+    ip_addr: IpAddr,
+    range: PortRange,
+) -> io::Result<((u16, UdpSocket), (u16, UdpSocket))> {
+    let mut first: Option<UdpSocket> = None;
+    for port in range.0..range.1 {
+        if let Ok(bind) = bind_to(ip_addr, port, false) {
+            match first {
+                Some(first_bind) => {
+                    return Ok((
+                        (first_bind.local_addr().unwrap().port(), first_bind),
+                        (bind.local_addr().unwrap().port(), bind),
+                    ));
+                }
+                None => {
+                    first = Some(bind);
+                }
+            }
+        } else {
+            first = None;
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        "couldn't find two consecutive ports in range".to_string(),
+    ))
 }
 
 pub fn find_available_port_in_range(ip_addr: IpAddr, range: PortRange) -> io::Result<u16> {

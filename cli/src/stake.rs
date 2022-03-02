@@ -453,7 +453,7 @@ impl StakeSubCommands for App<'_, '_> {
         )
         .subcommand(
             SubCommand::with_name("withdraw-stake")
-                .about("Withdraw the unstaked SOL from the stake account")
+                .about("Withdraw the unstaked UNIMOON from the stake account")
                 .arg(
                     pubkey!(Arg::with_name("stake_account_pubkey")
                         .index(1)
@@ -475,7 +475,7 @@ impl StakeSubCommands for App<'_, '_> {
                         .takes_value(true)
                         .validator(is_amount_or_all)
                         .required(true)
-                        .help("The amount to withdraw from the stake account, in SOL; accepts keyword ALL")
+                        .help("The amount to withdraw from the stake account, in UNIMOON; accepts keyword ALL")
                 )
                 .arg(
                     Arg::with_name("seed")
@@ -1384,7 +1384,13 @@ pub fn process_stake_authorize(
             if let Some(authorized) = authorized {
                 match authorization_type {
                     StakeAuthorize::Staker => {
-                        check_current_authority(&authorized.staker, &authority.pubkey())?;
+                        // first check authorized withdrawer
+                        check_current_authority(&authorized.withdrawer, &authority.pubkey())
+                            .or_else(|_| {
+                                // ...then check authorized staker. If neither matches, error will
+                                // print the stake key as `expected`
+                                check_current_authority(&authorized.staker, &authority.pubkey())
+                            })?;
                     }
                     StakeAuthorize::Withdrawer => {
                         check_current_authority(&authorized.withdrawer, &authority.pubkey())?;

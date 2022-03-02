@@ -21,9 +21,11 @@ pub mod ed25519_instruction;
 pub mod entrypoint;
 pub mod entrypoint_deprecated;
 pub mod epoch_info;
+pub mod example_mocks;
 pub mod exit;
 pub mod feature;
 pub mod feature_set;
+pub mod fee;
 pub mod genesis_config;
 pub mod hard_forks;
 pub mod hash;
@@ -37,6 +39,7 @@ pub mod poh_config;
 pub mod precompiles;
 pub mod program_utils;
 pub mod pubkey;
+pub mod quic;
 pub mod recent_blockhashes_account;
 pub mod rpc_port;
 pub mod secp256k1_instruction;
@@ -46,6 +49,7 @@ pub mod signer;
 pub mod system_transaction;
 pub mod timing;
 pub mod transaction;
+pub mod transaction_context;
 pub mod transport;
 pub mod wasm;
 
@@ -93,6 +97,14 @@ pub use solana_sdk_macro::pubkeys;
 #[rustversion::since(1.46.0)]
 pub use solana_sdk_macro::respan;
 
+#[deprecated(
+    since = "1.9.0",
+    note = "use only to break https://github.com/rust-lang/rust/issues/92987. remove when we move to Rust 1.60.0"
+)]
+#[doc(hidden)]
+#[cfg(debug_assertions)]
+pub trait AutoTraitBreakSendSync: Send + Sync {}
+
 // Unused `solana_sdk::program_stubs!()` macro retained for source backwards compatibility with older programs
 #[macro_export]
 #[deprecated(
@@ -103,6 +115,15 @@ macro_rules! program_stubs {
     () => {};
 }
 
+/// Convenience macro for `AddAssign` with saturating arithmetic.
+/// Replace by `std::num::Saturating` once stable
+#[macro_export]
+macro_rules! saturating_add_assign {
+    ($i:expr, $v:expr) => {{
+        $i = $i.saturating_add($v)
+    }};
+}
+
 #[macro_use]
 extern crate serde_derive;
 pub extern crate bs58;
@@ -110,3 +131,18 @@ extern crate log as logger;
 
 #[macro_use]
 extern crate solana_frozen_abi_macro;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_saturating_add_assign() {
+        let mut i = 0u64;
+        let v = 1;
+        saturating_add_assign!(i, v);
+        assert_eq!(i, 1);
+
+        i = u64::MAX;
+        saturating_add_assign!(i, v);
+        assert_eq!(i, u64::MAX);
+    }
+}

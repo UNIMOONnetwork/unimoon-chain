@@ -84,7 +84,7 @@ impl NonceSubCommands for App<'_, '_> {
                         .takes_value(true)
                         .required(true)
                         .validator(is_amount_or_all)
-                        .help("The amount to load the nonce account with, in SOL; accepts keyword ALL"),
+                        .help("The amount to load the nonce account with, in UNIMOON; accepts keyword ALL"),
                 )
                 .arg(
                     pubkey!(Arg::with_name(NONCE_AUTHORITY_ARG.name)
@@ -146,7 +146,7 @@ impl NonceSubCommands for App<'_, '_> {
         )
         .subcommand(
             SubCommand::with_name("withdraw-from-nonce-account")
-                .about("Withdraw SOL from the nonce account")
+                .about("Withdraw UNIMOON from the nonce account")
                 .arg(
                     pubkey!(Arg::with_name("nonce_account_pubkey")
                         .index(1)
@@ -159,7 +159,7 @@ impl NonceSubCommands for App<'_, '_> {
                         .index(2)
                         .value_name("RECIPIENT_ADDRESS")
                         .required(true),
-                        "The account to which the SOL should be transferred. "),
+                        "The account to which the UNIMOON should be transferred. "),
                 )
                 .arg(
                     Arg::with_name("amount")
@@ -334,9 +334,17 @@ pub fn check_nonce_account(
     match state_from_account(nonce_account)? {
         State::Initialized(ref data) => {
             if &data.blockhash != nonce_hash {
-                Err(Error::InvalidHash.into())
+                Err(Error::InvalidHash {
+                    provided: *nonce_hash,
+                    expected: data.blockhash,
+                }
+                .into())
             } else if nonce_authority != &data.authority {
-                Err(Error::InvalidAuthority.into())
+                Err(Error::InvalidAuthority {
+                    provided: *nonce_authority,
+                    expected: data.authority,
+                }
+                .into())
             } else {
                 Ok(())
             }
@@ -946,15 +954,22 @@ mod tests {
             hash(b"invalid"),
             0,
         )));
-        let invalid_hash = Account::new_data(1, &data, &system_program::ID);
+        let invalid_hash = Account::new_data(1, &data, &system_program::ID).unwrap();
         if let CliError::InvalidNonce(err) =
-            check_nonce_account(&invalid_hash.unwrap(), &nonce_pubkey, &blockhash).unwrap_err()
+            check_nonce_account(&invalid_hash, &nonce_pubkey, &blockhash).unwrap_err()
         {
-            assert_eq!(err, Error::InvalidHash,);
+            assert_eq!(
+                err,
+                Error::InvalidHash {
+                    provided: blockhash,
+                    expected: hash(b"invalid"),
+                }
+            );
         }
 
+        let new_nonce_authority = solana_sdk::pubkey::new_rand();
         let data = Versions::new_current(State::Initialized(nonce::state::Data::new(
-            solana_sdk::pubkey::new_rand(),
+            new_nonce_authority,
             blockhash,
             0,
         )));
@@ -962,7 +977,13 @@ mod tests {
         if let CliError::InvalidNonce(err) =
             check_nonce_account(&invalid_authority.unwrap(), &nonce_pubkey, &blockhash).unwrap_err()
         {
-            assert_eq!(err, Error::InvalidAuthority,);
+            assert_eq!(
+                err,
+                Error::InvalidAuthority {
+                    provided: nonce_pubkey,
+                    expected: new_nonce_authority,
+                }
+            );
         }
 
         let data = Versions::new_current(State::Uninitialized);

@@ -2,12 +2,13 @@ use {
     crate::{
         accounts_update_notifier::AccountsUpdateNotifierImpl,
         accountsdb_plugin_manager::AccountsDbPluginManager,
+        block_metadata_notifier::BlockMetadataNotifierImpl,
+        block_metadata_notifier_interface::BlockMetadataNotifierLock,
         slot_status_notifier::SlotStatusNotifierImpl, slot_status_observer::SlotStatusObserver,
         transaction_notifier::TransactionNotifierImpl,
     },
     crossbeam_channel::Receiver,
     log::*,
-    serde_json,
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotification,
         transaction_notifier_interface::TransactionNotifierLock,
@@ -50,6 +51,7 @@ pub struct AccountsDbPluginService {
     plugin_manager: Arc<RwLock<AccountsDbPluginManager>>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
     transaction_notifier: Option<TransactionNotifierLock>,
+    block_metadata_notifier: Option<BlockMetadataNotifierLock>,
 }
 
 impl AccountsDbPluginService {
@@ -102,17 +104,24 @@ impl AccountsDbPluginService {
                 None
             };
 
-        let slot_status_observer =
-            if account_data_notifications_enabled || transaction_notifications_enabled {
-                let slot_status_notifier = SlotStatusNotifierImpl::new(plugin_manager.clone());
-                let slot_status_notifier = Arc::new(RwLock::new(slot_status_notifier));
+        let (slot_status_observer, block_metadata_notifier): (
+            Option<SlotStatusObserver>,
+            Option<BlockMetadataNotifierLock>,
+        ) = if account_data_notifications_enabled || transaction_notifications_enabled {
+            let slot_status_notifier = SlotStatusNotifierImpl::new(plugin_manager.clone());
+            let slot_status_notifier = Arc::new(RwLock::new(slot_status_notifier));
+            (
                 Some(SlotStatusObserver::new(
                     confirmed_bank_receiver,
                     slot_status_notifier,
-                ))
-            } else {
-                None
-            };
+                )),
+                Some(Arc::new(RwLock::new(BlockMetadataNotifierImpl::new(
+                    plugin_manager.clone(),
+                )))),
+            )
+        } else {
+            (None, None)
+        };
 
         info!("Started AccountsDbPluginService");
         Ok(AccountsDbPluginService {
@@ -120,6 +129,7 @@ impl AccountsDbPluginService {
             plugin_manager,
             accounts_update_notifier,
             transaction_notifier,
+            block_metadata_notifier,
         })
     }
 
@@ -145,12 +155,12 @@ impl AccountsDbPluginService {
             )));
         }
 
-        let result: serde_json::Value = match serde_json::from_str(&contents) {
+        let result: serde_json::Value = match json5::from_str(&contents) {
             Ok(value) => value,
             Err(err) => {
                 return Err(AccountsdbPluginServiceError::InvalidConfigFileFormat(
                     format!(
-                        "The config file {:?} is not in a valid Json format, error: {:?}",
+                        "The config file {:?} is not in a valid Json5 format, error: {:?}",
                         accountsdb_plugin_config_file, err
                     ),
                 ));
@@ -160,13 +170,24 @@ impl AccountsDbPluginService {
         let libpath = result["libpath"]
             .as_str()
             .ok_or(AccountsdbPluginServiceError::LibPathNotSet)?;
+        let mut libpath = PathBuf::from(libpath);
+        if libpath.is_relative() {
+            let config_dir = accountsdb_plugin_config_file.parent().ok_or_else(|| {
+                AccountsdbPluginServiceError::CannotOpenConfigFile(format!(
+                    "Failed to resolve parent of {:?}",
+                    accountsdb_plugin_config_file,
+                ))
+            })?;
+            libpath = config_dir.join(libpath);
+        }
+
         let config_file = accountsdb_plugin_config_file
             .as_os_str()
             .to_str()
             .ok_or(AccountsdbPluginServiceError::InvalidPluginPath)?;
 
         unsafe {
-            let result = plugin_manager.load_plugin(libpath, config_file);
+            let result = plugin_manager.load_plugin(libpath.to_str().unwrap(), config_file);
             if let Err(err) = result {
                 let msg = format!(
                     "Failed to load the plugin library: {:?}, error: {:?}",
@@ -184,6 +205,10 @@ impl AccountsDbPluginService {
 
     pub fn get_transaction_notifier(&self) -> Option<TransactionNotifierLock> {
         self.transaction_notifier.clone()
+    }
+
+    pub fn get_block_metadata_notifier(&self) -> Option<BlockMetadataNotifierLock> {
+        self.block_metadata_notifier.clone()
     }
 
     pub fn join(self) -> thread::Result<()> {

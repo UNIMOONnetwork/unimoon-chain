@@ -64,7 +64,7 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
   switch (cluster) {
     case Cluster.Devnet:
       // return DEVNET_URL.replace("api", "explorer-api");
-      return "http://explorer.unimoon.io:8899/"
+      return "http://explorer.unimoon.io:8899/";
     case Cluster.MainnetBeta:
       return MAINNET_BETA_URL.replace("api", "explorer-api");
     case Cluster.Testnet:
@@ -146,9 +146,8 @@ export function ClusterProvider({ children }: ClusterProviderProps) {
   const enableCustomUrl =
     localStorageIsAvailable() &&
     localStorage.getItem("enableCustomUrl") !== null;
-  const customUrl = enableCustomUrl
-    ? query.get("customUrl") || ""
-    : state.customUrl;
+  const customUrl =
+    (enableCustomUrl && query.get("customUrl")) || state.customUrl;
   const history = useHistory();
   const location = useLocation();
 
@@ -162,15 +161,6 @@ export function ClusterProvider({ children }: ClusterProviderProps) {
 
   // Reconnect to cluster when params change
   React.useEffect(() => {
-    if (cluster === Cluster.Custom) {
-      // Remove cluster param if custom url has not been set
-      if (customUrl.length === 0) {
-        query.delete("cluster");
-        history.push({ ...location, search: query.toString() });
-        return;
-      }
-    }
-
     updateCluster(dispatch, cluster, customUrl);
   }, [cluster, customUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -197,6 +187,9 @@ async function updateCluster(
   });
 
   try {
+    // validate url
+    new URL(customUrl);
+
     const connection = new Connection(clusterUrl(cluster, customUrl));
     const [firstAvailableBlock, epochSchedule, epochInfo, genesisHash] =
       await Promise.all([

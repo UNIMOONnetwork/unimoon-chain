@@ -1,7 +1,7 @@
 [package]
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]
 edition = "2021"
-name = "solana-sys-tuner"
+name = "unimoon-sys-tuner"
 description = "The solana cluster system tuner daemon"
 version = "1.10.0"
 repository = "https://github.com/solana-labs/solana"
@@ -13,7 +13,7 @@ publish = true
 [dependencies]
 clap = "2.33.1"
 log = "0.4.14"
-libc = "0.2.112"
+libc = "0.2.117"
 solana-logger = { path = "../logger", version = "=1.10.0" }
 solana-version = { path = "../version", version = "=1.10.0" }
 
@@ -27,7 +27,7 @@ sysctl = "0.4.3"
 name = "solana_sys_tuner"
 
 [[bin]]
-name = "unimoon-sys-tuner"
+name = "solana-sys-tuner"
 path = "src/main.rs"
 
 [package.metadata.docs.rs]

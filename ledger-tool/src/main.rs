@@ -4,6 +4,7 @@ use {
         crate_description, crate_name, value_t, value_t_or_exit, values_t_or_exit, App,
         AppSettings, Arg, ArgMatches, SubCommand,
     },
+    crossbeam_channel::unbounded,
     dashmap::DashMap,
     itertools::Itertools,
     log::*,
@@ -22,7 +23,7 @@ use {
         ancestor_iterator::AncestorIterator,
         bank_forks_utils,
         blockstore::{create_new_ledger, Blockstore, PurgeType},
-        blockstore_db::{self, AccessType, BlockstoreRecoveryMode, Column, Database},
+        blockstore_db::{self, AccessType, BlockstoreOptions, BlockstoreRecoveryMode, Database},
         blockstore_processor::ProcessOptions,
         shred::Shred,
     },
@@ -55,7 +56,7 @@ use {
         shred_version::compute_shred_version,
         stake::{self, state::StakeState},
         system_program,
-        transaction::{SanitizedTransaction, TransactionError},
+        transaction::{DisabledAddressLoader, SanitizedTransaction},
     },
     solana_stake_program::stake_state::{self, PointValue},
     solana_vote_program::{
@@ -72,7 +73,6 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            mpsc::channel,
             Arc, RwLock,
         },
     },
@@ -232,10 +232,12 @@ fn output_slot(
             num_hashes += entry.num_hashes;
             for transaction in entry.transactions {
                 let tx_signature = transaction.signatures[0];
-                let sanitize_result =
-                    SanitizedTransaction::try_create(transaction, Hash::default(), None, |_| {
-                        Err(TransactionError::UnsupportedVersion)
-                    });
+                let sanitize_result = SanitizedTransaction::try_create(
+                    transaction,
+                    Hash::default(),
+                    None,
+                    &DisabledAddressLoader,
+                );
 
                 match sanitize_result {
                     Ok(transaction) => {
@@ -436,7 +438,7 @@ fn graph_forks(bank_forks: &BankForks, include_all_votes: bool) -> String {
                         slot_stake_and_vote_count.get(&bank.slot())
                     {
                         format!(
-                            "\nvotes: {}, stake: {:.1} SOL ({:.1}%)",
+                            "\nvotes: {}, stake: {:.1} UNIMOON ({:.1}%)",
                             votes,
                             lamports_to_sol(*stake),
                             *stake as f64 / *total_stake as f64 * 100.,
@@ -497,7 +499,7 @@ fn graph_forks(bank_forks: &BankForks, include_all_votes: bool) -> String {
         });
 
         dot.push(format!(
-            r#"  "last vote {}"[shape=box,label="Latest validator vote: {}\nstake: {} SOL\nroot slot: {}\nvote history:\n{}"];"#,
+            r#"  "last vote {}"[shape=box,label="Latest validator vote: {}\nstake: {} UNIMOON\nroot slot: {}\nvote history:\n{}"];"#,
             node_pubkey,
             node_pubkey,
             lamports_to_sol(*stake),
@@ -531,7 +533,7 @@ fn graph_forks(bank_forks: &BankForks, include_all_votes: bool) -> String {
     // Annotate the final "..." node with absent vote and stake information
     if absent_votes > 0 {
         dot.push(format!(
-            r#"    "..."[label="...\nvotes: {}, stake: {:.1} SOL {:.1}%"];"#,
+            r#"    "..."[label="...\nvotes: {}, stake: {:.1} UNIMOON {:.1}%"];"#,
             absent_votes,
             lamports_to_sol(absent_stake),
             absent_stake as f64 / lowest_total_stake as f64 * 100.,
@@ -575,18 +577,17 @@ fn graph_forks(bank_forks: &BankForks, include_all_votes: bool) -> String {
 }
 
 fn analyze_column<
-    T: solana_ledger::blockstore_db::Column + solana_ledger::blockstore_db::ColumnName,
+    C: solana_ledger::blockstore_db::Column + solana_ledger::blockstore_db::ColumnName,
 >(
     db: &Database,
     name: &str,
-    key_size: usize,
 ) {
     let mut key_tot: u64 = 0;
     let mut val_hist = histogram::Histogram::new();
     let mut val_tot: u64 = 0;
     let mut row_hist = histogram::Histogram::new();
-    let a = key_size as u64;
-    for (_x, y) in db.iter::<T>(blockstore_db::IteratorMode::Start).unwrap() {
+    let a = C::key_size() as u64;
+    for (_x, y) in db.iter::<C>(blockstore_db::IteratorMode::Start).unwrap() {
         let b = y.len() as u64;
         key_tot += a;
         val_hist.increment(b).unwrap();
@@ -645,30 +646,25 @@ fn analyze_column<
 
 fn analyze_storage(database: &Database) {
     use blockstore_db::columns::*;
-    analyze_column::<SlotMeta>(database, "SlotMeta", SlotMeta::key_size());
-    analyze_column::<Orphans>(database, "Orphans", Orphans::key_size());
-    analyze_column::<DeadSlots>(database, "DeadSlots", DeadSlots::key_size());
-    analyze_column::<ErasureMeta>(database, "ErasureMeta", ErasureMeta::key_size());
-    analyze_column::<Root>(database, "Root", Root::key_size());
-    analyze_column::<Index>(database, "Index", Index::key_size());
-    analyze_column::<ShredData>(database, "ShredData", ShredData::key_size());
-    analyze_column::<ShredCode>(database, "ShredCode", ShredCode::key_size());
-    analyze_column::<TransactionStatus>(
-        database,
-        "TransactionStatus",
-        TransactionStatus::key_size(),
-    );
-    analyze_column::<TransactionStatus>(
-        database,
-        "TransactionStatusIndex",
-        TransactionStatusIndex::key_size(),
-    );
-    analyze_column::<AddressSignatures>(
-        database,
-        "AddressSignatures",
-        AddressSignatures::key_size(),
-    );
-    analyze_column::<Rewards>(database, "Rewards", Rewards::key_size());
+    analyze_column::<SlotMeta>(database, "SlotMeta");
+    analyze_column::<Orphans>(database, "Orphans");
+    analyze_column::<DeadSlots>(database, "DeadSlots");
+    analyze_column::<DuplicateSlots>(database, "DuplicateSlots");
+    analyze_column::<ErasureMeta>(database, "ErasureMeta");
+    analyze_column::<BankHash>(database, "BankHash");
+    analyze_column::<Root>(database, "Root");
+    analyze_column::<Index>(database, "Index");
+    analyze_column::<ShredData>(database, "ShredData");
+    analyze_column::<ShredCode>(database, "ShredCode");
+    analyze_column::<TransactionStatus>(database, "TransactionStatus");
+    analyze_column::<AddressSignatures>(database, "AddressSignatures");
+    analyze_column::<TransactionMemos>(database, "TransactionMemos");
+    analyze_column::<TransactionStatusIndex>(database, "TransactionStatusIndex");
+    analyze_column::<Rewards>(database, "Rewards");
+    analyze_column::<Blocktime>(database, "Blocktime");
+    analyze_column::<PerfSamples>(database, "PerfSamples");
+    analyze_column::<BlockHeight>(database, "BlockHeight");
+    analyze_column::<ProgramCosts>(database, "ProgramCosts");
 }
 
 fn open_blockstore(
@@ -676,20 +672,18 @@ fn open_blockstore(
     access_type: AccessType,
     wal_recovery_mode: Option<BlockstoreRecoveryMode>,
 ) -> Blockstore {
-    match Blockstore::open_with_access_type(ledger_path, access_type, wal_recovery_mode, true) {
+    match Blockstore::open_with_options(
+        ledger_path,
+        BlockstoreOptions {
+            access_type,
+            recovery_mode: wal_recovery_mode,
+            enforce_ulimit_nofile: true,
+            ..BlockstoreOptions::default()
+        },
+    ) {
         Ok(blockstore) => blockstore,
         Err(err) => {
             eprintln!("Failed to open ledger at {:?}: {:?}", ledger_path, err);
-            exit(1);
-        }
-    }
-}
-
-fn open_database(ledger_path: &Path, access_type: AccessType) -> Database {
-    match Database::open(&ledger_path.join("rocksdb"), access_type, None) {
-        Ok(database) => database,
-        Err(err) => {
-            eprintln!("Unable to read the Ledger rocksdb: {:?}", err);
             exit(1);
         }
     }
@@ -750,7 +744,7 @@ fn load_bank_forks(
         vec![non_primary_accounts_path]
     };
 
-    let (accounts_package_sender, _) = channel();
+    let (accounts_package_sender, _) = unbounded();
     bank_forks_utils::load(
         genesis_config,
         blockstore,
@@ -789,9 +783,12 @@ fn compute_slot_cost(blockstore: &Blockstore, slot: Slot) -> Result<(), String> 
             .transactions
             .into_iter()
             .filter_map(|transaction| {
-                SanitizedTransaction::try_create(transaction, Hash::default(), None, |_| {
-                    Err(TransactionError::UnsupportedVersion)
-                })
+                SanitizedTransaction::try_create(
+                    transaction,
+                    Hash::default(),
+                    None,
+                    &DisabledAddressLoader,
+                )
                 .map_err(|err| {
                     warn!("Failed to compute cost of transaction: {:?}", err);
                 })
@@ -892,6 +889,10 @@ fn main() {
         .validator(is_parsable::<usize>)
         .takes_value(true)
         .help("How much memory the accounts index can consume. If this is exceeded, some account index entries will be stored on disk. If missing, the entire index is stored in memory.");
+    let disable_disk_index = Arg::with_name("disable_accounts_disk_index")
+        .long("disable-accounts-disk-index")
+        .help("Disable the disk-based accounts index if it is enabled by default.")
+        .conflicts_with("accounts_index_memory_limit_mb");
     let accountsdb_skip_shrink = Arg::with_name("accounts_db_skip_shrink")
         .long("accounts-db-skip-shrink")
         .help(
@@ -1242,6 +1243,7 @@ fn main() {
             .arg(&limit_load_slot_count_from_snapshot_arg)
             .arg(&accounts_index_bins)
             .arg(&accounts_index_limit)
+            .arg(&disable_disk_index)
             .arg(&accountsdb_skip_shrink)
             .arg(&accounts_filler_count)
             .arg(&verify_index_arg)
@@ -1994,6 +1996,8 @@ fn main() {
                     value_t!(arg_matches, "accounts_index_memory_limit_mb", usize).ok()
                 {
                     accounts_index_config.index_limit_mb = Some(limit);
+                } else if arg_matches.is_present("disable_accounts_disk_index") {
+                    accounts_index_config.index_limit_mb = None;
                 }
 
                 {
@@ -2552,10 +2556,7 @@ fn main() {
                     for (pubkey, (account, slot)) in accounts.into_iter() {
                         let data_len = account.data().len();
                         println!("{}:", pubkey);
-			// modified by alex to change native token name
-                        // println!("  - balance: {} SOL", lamports_to_sol(account.lamports()));
-			println!("  - balance: {} UNIMOON", lamports_to_sol(account.lamports()));
-			// end modify
+                        println!("  - balance: {} SOL", lamports_to_sol(account.lamports()));
                         println!("  - owner: '{}'", account.owner());
                         println!("  - executable: {}", account.executable());
                         println!("  - slot: {}", slot);
@@ -3304,10 +3305,14 @@ fn main() {
                 };
             }
             ("analyze-storage", _) => {
-                analyze_storage(&open_database(
-                    &ledger_path,
-                    AccessType::TryPrimaryThenSecondary,
-                ));
+                analyze_storage(
+                    &open_blockstore(
+                        &ledger_path,
+                        AccessType::TryPrimaryThenSecondary,
+                        wal_recovery_mode,
+                    )
+                    .db(),
+                );
                 println!("Ok.");
             }
             ("compute-slot-cost", Some(arg_matches)) => {

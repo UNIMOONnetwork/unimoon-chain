@@ -263,10 +263,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let balances = get_balances(&client, addresses)?;
             let lamports: u64 = balances.into_iter().map(|(_, bal)| bal).sum();
             let sol = lamports_to_sol(lamports);
-	    // modified by alex for changing native token name
-            // println!("{} SOL", sol);
-	    println!("{} UNIMOON", sol);
-	    // end modify
+            println!("{} UNIMOON", sol);
         }
         Command::Authorize(args) => {
             process_authorize_stake_accounts(&client, &args)?;

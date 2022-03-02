@@ -40,9 +40,11 @@ base64 = "0.13"
 curve25519-dalek = "3.0.0"
 libsecp256k1 = "0.6.0"
 rand = "0.7.0"
-solana-logger = { path = "../../logger", version = "=1.10.0" }
 itertools = "0.10.1"
 wasm-bindgen = "0.2"
+
+[target.'cfg(not(target_arch = "bpf"))'.dev-dependencies]
+solana-logger = { path = "../../logger", version = "=1.10.0" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.7"
@@ -51,7 +53,7 @@ js-sys = "0.3.55"
 getrandom = { version = "0.1", features = ["wasm-bindgen"] }
 
 [target.'cfg(not(target_pointer_width = "64"))'.dependencies]
-parking_lot = "0.11"
+parking_lot = "0.12"
 
 [dev-dependencies]
 anyhow = "1.0.45"
