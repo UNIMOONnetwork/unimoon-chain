@@ -1,5 +1,5 @@
 [package]
-name = "unimoon-net-utils"
+name = "solana-net-utils"
 version = "1.10.0"
 description = "Solana Network Utilities"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]

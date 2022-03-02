@@ -1,5 +1,5 @@
 [package]
-name = "unimoon-keygen"
+name = "solana-keygen"
 version = "1.10.0"
 description = "Solana key generation utility"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]

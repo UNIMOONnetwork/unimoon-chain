@@ -1,7 +1,7 @@
 [package]
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]
 edition = "2021"
-name = "unimoon-sys-tuner"
+name = "solana-sys-tuner"
 description = "The solana cluster system tuner daemon"
 version = "1.10.0"
 repository = "https://github.com/solana-labs/solana"

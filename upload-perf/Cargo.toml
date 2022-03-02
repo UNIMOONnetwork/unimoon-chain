@@ -1,5 +1,5 @@
 [package]
-name = "unimoon-upload-perf"
+name = "solana-upload-perf"
 version = "1.10.0"
 description = "Metrics Upload Utility"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]

@@ -1,5 +1,5 @@
 [package]
-name = "unimoon-faucet"
+name = "solana-faucet"
 version = "1.10.0"
 description = "Solana Faucet"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]
