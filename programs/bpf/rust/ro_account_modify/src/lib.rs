@@ -1,5 +1,6 @@
 use solana_program::{
     account_info::AccountInfo,
+    entrypoint,
     entrypoint::ProgramResult,
     instruction::{AccountMeta, Instruction},
     msg,
@@ -14,7 +15,7 @@ const INSTRUCTION_INVOKE_MODIFY: u8 = 1;
 const INSTRUCTION_MODIFY_INVOKE: u8 = 2;
 const INSTRUCTION_VERIFY_MODIFIED: u8 = 3;
 
-solana_program::entrypoint!(process_instruction);
+entrypoint!(process_instruction);
 fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],

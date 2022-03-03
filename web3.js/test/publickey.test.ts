@@ -71,17 +71,6 @@ describe('PublicKey', function () {
     expect(key4.toBase58()).to.eq('11111111111111111111111111111111');
   });
 
-  it('toJSON', () => {
-    const key = new PublicKey('CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz3');
-    expect(key.toJSON()).to.eq('CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz3');
-    expect(JSON.stringify(key)).to.eq(
-      '"CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz3"',
-    );
-    expect(JSON.stringify({key})).to.eq(
-      '{"key":"CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz3"}',
-    );
-  });
-
   it('toBuffer', () => {
     const key = new PublicKey('CiDwVBFgWV9E5MvXWoLgnEgn2hK7rJikbvfWavzAQz3');
     expect(key.toBuffer()).to.have.length(32);
@@ -237,13 +226,6 @@ describe('PublicKey', function () {
     const publicKey = Keypair.generate().publicKey;
     const encoded = publicKey.encode();
     const decoded = PublicKey.decode(encoded);
-    expect(decoded.equals(publicKey)).to.be.true;
-  });
-
-  it('canBeDeserializedUncheckedWithBorsh', () => {
-    const publicKey = Keypair.generate().publicKey;
-    const encoded = Buffer.concat([publicKey.encode(), new Uint8Array(10)]);
-    const decoded = PublicKey.decodeUnchecked(encoded);
     expect(decoded.equals(publicKey)).to.be.true;
   });
 });

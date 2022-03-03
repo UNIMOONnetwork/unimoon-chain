@@ -181,7 +181,7 @@ impl ClusterSlotsService {
 mod test {
     use {
         super::*,
-        solana_gossip::{cluster_info::Node, crds_value::LowestSlot},
+        solana_gossip::{cluster_info::Node, crds_value::CrdsValueLabel},
         solana_sdk::{pubkey::Pubkey, signature::Keypair},
         solana_streamer::socket::SocketAddrSpace,
     };
@@ -198,8 +198,10 @@ mod test {
         ClusterSlotsService::update_lowest_slot(5, &cluster_info);
         cluster_info.flush_push_queue();
         let lowest = {
-            let gossip_crds = cluster_info.gossip.crds.read().unwrap();
-            gossip_crds.get::<&LowestSlot>(pubkey).unwrap().clone()
+            let label = CrdsValueLabel::LowestSlot(pubkey);
+            let gossip = cluster_info.gossip.read().unwrap();
+            let entry = gossip.crds.get(&label).unwrap();
+            entry.value.lowest_slot().unwrap().clone()
         };
         assert_eq!(lowest.lowest, 5);
     }

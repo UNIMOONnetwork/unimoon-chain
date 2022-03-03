@@ -4,7 +4,6 @@ use {
         account::{Account, ReadableAccount},
         account_utils::StateMut,
         commitment_config::CommitmentConfig,
-        hash::Hash,
         nonce::{
             state::{Data, Versions},
             State,
@@ -22,10 +21,10 @@ pub enum Error {
     InvalidAccountData,
     #[error("unexpected account data size")]
     UnexpectedDataSize,
-    #[error("provided hash ({provided}) does not match nonce hash ({expected})")]
-    InvalidHash { provided: Hash, expected: Hash },
-    #[error("provided authority ({provided}) does not match nonce authority ({expected})")]
-    InvalidAuthority { provided: Pubkey, expected: Pubkey },
+    #[error("query hash does not match stored hash")]
+    InvalidHash,
+    #[error("query authority does not match account authority")]
+    InvalidAuthority,
     #[error("invalid state for requested operation")]
     InvalidStateForOperation,
     #[error("client error: {0}")]

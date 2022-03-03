@@ -39,7 +39,7 @@ use {
         system_program,
         transaction::Transaction,
     },
-    solana_transaction_status::{Encodable, EncodedTransaction, UiTransactionEncoding},
+    solana_transaction_status::{EncodedTransaction, UiTransactionEncoding},
     std::{fmt::Write as FmtWrite, fs::File, io::Write, sync::Arc},
 };
 
@@ -273,14 +273,11 @@ impl WalletSubCommands for App<'_, '_> {
 }
 
 fn resolve_derived_address_program_id(matches: &ArgMatches<'_>, arg_name: &str) -> Option<Pubkey> {
-    matches.value_of(arg_name).and_then(|v| {
-        let upper = v.to_ascii_uppercase();
-        match upper.as_str() {
-            "NONCE" | "SYSTEM" => Some(system_program::id()),
-            "STAKE" => Some(stake::program::id()),
-            "VOTE" => Some(solana_vote_program::id()),
-            _ => pubkey_of(matches, arg_name),
-        }
+    matches.value_of(arg_name).and_then(|v| match v {
+        "NONCE" => Some(system_program::id()),
+        "STAKE" => Some(stake::program::id()),
+        "VOTE" => Some(solana_vote_program::id()),
+        _ => pubkey_of(matches, arg_name),
     })
 }
 
@@ -465,27 +462,18 @@ pub fn process_show_account(
 
     let mut account_string = config.output_format.formatted_string(&cli_account);
 
-    match config.output_format {
-        OutputFormat::Json | OutputFormat::JsonCompact => {
-            if let Some(output_file) = output_file {
-                let mut f = File::create(output_file)?;
-                f.write_all(account_string.as_bytes())?;
-                writeln!(&mut account_string)?;
-                writeln!(&mut account_string, "Wrote account to {}", output_file)?;
-            }
+    if config.output_format == OutputFormat::Display
+        || config.output_format == OutputFormat::DisplayVerbose
+    {
+        if let Some(output_file) = output_file {
+            let mut f = File::create(output_file)?;
+            f.write_all(&data)?;
+            writeln!(&mut account_string)?;
+            writeln!(&mut account_string, "Wrote account data to {}", output_file)?;
+        } else if !data.is_empty() {
+            use pretty_hex::*;
+            writeln!(&mut account_string, "{:?}", data.hex_dump())?;
         }
-        OutputFormat::Display | OutputFormat::DisplayVerbose => {
-            if let Some(output_file) = output_file {
-                let mut f = File::create(output_file)?;
-                f.write_all(&data)?;
-                writeln!(&mut account_string)?;
-                writeln!(&mut account_string, "Wrote account data to {}", output_file)?;
-            } else if !data.is_empty() {
-                use pretty_hex::*;
-                writeln!(&mut account_string, "{:?}", data.hex_dump())?;
-            }
-        }
-        OutputFormat::DisplayQuiet => (),
     }
 
     Ok(account_string)
@@ -567,8 +555,10 @@ pub fn process_confirm(
                                 .transaction
                                 .decode()
                                 .expect("Successful decode");
-                            let json_transaction =
-                                decoded_transaction.encode(UiTransactionEncoding::Json);
+                            let json_transaction = EncodedTransaction::encode(
+                                decoded_transaction.clone(),
+                                UiTransactionEncoding::Json,
+                            );
 
                             transaction = Some(CliTransaction {
                                 transaction: json_transaction,
@@ -610,7 +600,7 @@ pub fn process_decode_transaction(config: &CliConfig, transaction: &Transaction)
     let sigverify_status = CliSignatureVerificationStatus::verify_transaction(transaction);
     let decode_transaction = CliTransaction {
         decoded_transaction: transaction.clone(),
-        transaction: transaction.encode(UiTransactionEncoding::Json),
+        transaction: EncodedTransaction::encode(transaction.clone(), UiTransactionEncoding::Json),
         meta: None,
         block_time: None,
         slot: None,
@@ -657,7 +647,8 @@ pub fn process_transfer(
     let from = config.signers[from];
     let mut from_pubkey = from.pubkey();
 
-    let recent_blockhash = blockhash_query.get_blockhash(rpc_client, config.commitment)?;
+    let (recent_blockhash, fee_calculator) =
+        blockhash_query.get_blockhash_and_fee_calculator(rpc_client, config.commitment)?;
 
     if !sign_only && !allow_unfunded_recipient {
         let recipient_balance = rpc_client
@@ -717,7 +708,7 @@ pub fn process_transfer(
         rpc_client,
         sign_only,
         amount,
-        &recent_blockhash,
+        &fee_calculator,
         &from_pubkey,
         &fee_payer.pubkey(),
         build_message,

@@ -48,9 +48,6 @@ pub enum SignerError {
 
     #[error("{0}")]
     UserCancel(String),
-
-    #[error("too many signers")]
-    TooManySigners,
 }
 
 /// The `Signer` trait declares operations that all digital signature providers

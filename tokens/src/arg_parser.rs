@@ -156,7 +156,7 @@ where
                         .long("unlocked-sol")
                         .takes_value(true)
                         .value_name("UNIMOON_AMOUNT")
-                        .help("Amount of UNIMOON to put in system account to pay for fees"),
+                        .help("Amount of SOL to put in system account to pay for fees"),
                 )
                 .arg(
                     Arg::with_name("lockup_authority")

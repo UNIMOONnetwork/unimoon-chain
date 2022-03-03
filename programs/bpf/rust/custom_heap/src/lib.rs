@@ -1,18 +1,17 @@
 //! Example Rust-based BPF that tests out using a custom heap
 
-use {
-    solana_program::{
-        account_info::AccountInfo,
-        entrypoint::{ProgramResult, HEAP_LENGTH, HEAP_START_ADDRESS},
-        msg,
-        pubkey::Pubkey,
-    },
-    std::{
-        alloc::{alloc, Layout},
-        mem::{align_of, size_of},
-        ptr::null_mut,
-        usize,
-    },
+use solana_program::{
+    account_info::AccountInfo,
+    entrypoint,
+    entrypoint::{ProgramResult, HEAP_LENGTH, HEAP_START_ADDRESS},
+    msg,
+    pubkey::Pubkey,
+};
+use std::{
+    alloc::{alloc, Layout},
+    mem::{align_of, size_of},
+    ptr::null_mut,
+    usize,
 };
 
 /// Developers can implement their own heap by defining their own
@@ -27,8 +26,8 @@ unsafe impl std::alloc::GlobalAlloc for BumpAllocator {
             0x42 as *mut u8
         } else {
             const POS_PTR: *mut usize = HEAP_START_ADDRESS as *mut usize;
-            const TOP_ADDRESS: usize = HEAP_START_ADDRESS as usize + HEAP_LENGTH;
-            const BOTTOM_ADDRESS: usize = HEAP_START_ADDRESS as usize + size_of::<*mut u8>();
+            const TOP_ADDRESS: usize = HEAP_START_ADDRESS + HEAP_LENGTH;
+            const BOTTOM_ADDRESS: usize = HEAP_START_ADDRESS + size_of::<*mut u8>();
 
             let mut pos = *POS_PTR;
             if pos == 0 {
@@ -53,7 +52,7 @@ unsafe impl std::alloc::GlobalAlloc for BumpAllocator {
 #[global_allocator]
 static A: BumpAllocator = BumpAllocator;
 
-solana_program::entrypoint!(process_instruction);
+entrypoint!(process_instruction);
 #[allow(clippy::unnecessary_wraps)]
 pub fn process_instruction(
     _program_id: &Pubkey,

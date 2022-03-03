@@ -5,8 +5,6 @@ use {
     std::{
         env,
         ffi::OsStr,
-        fs::File,
-        io::{prelude::*, BufWriter},
         path::{Path, PathBuf},
         process::{exit, Command},
     },
@@ -19,7 +17,6 @@ struct Config {
     cargo_build_bpf: PathBuf,
     extra_cargo_test_args: Vec<String>,
     features: Vec<String>,
-    generate_child_script_on_failure: bool,
     test_name: Option<String>,
     no_default_features: bool,
     no_run: bool,
@@ -37,7 +34,6 @@ impl Default for Config {
             cargo_build_bpf: PathBuf::from("cargo-build-bpf"),
             extra_cargo_test_args: vec![],
             features: vec![],
-            generate_child_script_on_failure: false,
             test_name: None,
             no_default_features: false,
             no_run: false,
@@ -48,13 +44,13 @@ impl Default for Config {
     }
 }
 
-fn spawn<I, S>(program: &Path, args: I, generate_child_script_on_failure: bool)
+fn spawn<I, S>(program: &Path, args: I)
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     let args = args.into_iter().collect::<Vec<_>>();
-    print!("cargo-test-bpf child: {}", program.display());
+    print!("Running: {}", program.display());
     for arg in args.iter() {
         print!(" {}", arg.as_ref().to_str().unwrap_or("?"));
     }
@@ -70,29 +66,6 @@ where
 
     let exit_status = child.wait().expect("failed to wait on child");
     if !exit_status.success() {
-        if !generate_child_script_on_failure {
-            exit(1);
-        }
-        eprintln!("cargo-test-bpf exited on command execution failure");
-        let script_name = format!(
-            "cargo-test-bpf-child-script-{}.sh",
-            program.file_name().unwrap().to_str().unwrap(),
-        );
-        let file = File::create(&script_name).unwrap();
-        let mut out = BufWriter::new(file);
-        for (key, value) in env::vars() {
-            writeln!(out, "{}=\"{}\" \\", key, value).unwrap();
-        }
-        write!(out, "{}", program.display()).unwrap();
-        for arg in args.iter() {
-            write!(out, " {}", arg.as_ref().to_str().unwrap_or("?")).unwrap();
-        }
-        writeln!(out).unwrap();
-        out.flush().unwrap();
-        eprintln!(
-            "To rerun the failed command for debugging use {}",
-            script_name,
-        );
         exit(1);
     }
 }
@@ -106,7 +79,7 @@ fn test_bpf_package(config: &Config, target_directory: &Path, package: &cargo_me
         .cloned()
         .unwrap_or_else(|| format!("{}", target_directory.join("deploy").display()));
 
-    let manifest_path = format!("{}", package.manifest_path);
+    let manifest_path = format!("{}", package.manifest_path.display());
     let mut cargo_args = vec!["--manifest-path", &manifest_path];
     if config.no_default_features {
         cargo_args.push("--no-default-features");
@@ -127,11 +100,7 @@ fn test_bpf_package(config: &Config, target_directory: &Path, package: &cargo_me
     build_bpf_args.push("--bpf-out-dir");
     build_bpf_args.push(&bpf_out_dir);
 
-    spawn(
-        &config.cargo_build_bpf,
-        &build_bpf_args,
-        config.generate_child_script_on_failure,
-    );
+    spawn(&config.cargo_build_bpf, &build_bpf_args);
 
     // Pass --bpf-out-dir along to the solana-program-test crate
     env::set_var("BPF_OUT_DIR", bpf_out_dir);
@@ -156,11 +125,7 @@ fn test_bpf_package(config: &Config, target_directory: &Path, package: &cargo_me
     for extra_cargo_test_arg in &config.extra_cargo_test_args {
         cargo_args.push(extra_cargo_test_arg);
     }
-    spawn(
-        &config.cargo,
-        &cargo_args,
-        config.generate_child_script_on_failure,
-    );
+    spawn(&config.cargo, &cargo_args);
 }
 
 fn test_bpf(config: Config, manifest_path: Option<PathBuf>) {
@@ -179,7 +144,7 @@ fn test_bpf(config: Config, manifest_path: Option<PathBuf>) {
 
     if let Some(root_package) = metadata.root_package() {
         if !config.workspace {
-            test_bpf_package(&config, metadata.target_directory.as_ref(), root_package);
+            test_bpf_package(&config, &metadata.target_directory, root_package);
             return;
         }
     }
@@ -200,7 +165,7 @@ fn test_bpf(config: Config, manifest_path: Option<PathBuf>) {
         .collect::<Vec<_>>();
 
     for package in all_bpf_packages {
-        test_bpf_package(&config, metadata.target_directory.as_ref(), package);
+        test_bpf_package(&config, &metadata.target_directory, package);
     }
 }
 
@@ -276,12 +241,6 @@ fn main() {
                 .help("Run without accessing the network"),
         )
         .arg(
-            Arg::with_name("generate_child_script_on_failure")
-                .long("generate-child-script-on-failure")
-                .takes_value(false)
-                .help("Generate a shell script to rerun a failed subcommand"),
-        )
-        .arg(
             Arg::with_name("verbose")
                 .short("v")
                 .long("verbose")
@@ -309,11 +268,10 @@ fn main() {
         bpf_out_dir: value_t!(matches, "bpf_out_dir", String).ok(),
         extra_cargo_test_args: values_t!(matches, "extra_cargo_test_args", String)
             .ok()
-            .unwrap_or_default(),
+            .unwrap_or_else(Vec::new),
         features: values_t!(matches, "features", String)
             .ok()
-            .unwrap_or_default(),
-        generate_child_script_on_failure: matches.is_present("generate_child_script_on_failure"),
+            .unwrap_or_else(Vec::new),
         test_name: value_t!(matches, "test", String).ok(),
         no_default_features: matches.is_present("no_default_features"),
         no_run: matches.is_present("no_run"),

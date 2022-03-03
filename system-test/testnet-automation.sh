@@ -22,7 +22,6 @@ $(eval echo "$@")"
     upload_results_to_slack
   fi
 
-
   (
     execution_step "Collecting Logfiles from Nodes"
     collect_logs
@@ -105,7 +104,6 @@ function launch_testnet() {
 
   execution_step "Fetch reusable testnet keypairs"
   if [[ ! -d "${REPO_ROOT}"/net/keypairs ]]; then
-#     git clone https://github.com/solana-labs/testnet-keypairs.git "${REPO_ROOT}"/net/keypairs
     git clone git@github.com:solana-labs/testnet-keypairs.git "${REPO_ROOT}"/net/keypairs
     # If we have provider-specific keys (CoLo*, GCE*, etc) use them instead of generic val*
     if [[ -d "${REPO_ROOT}"/net/keypairs/"${CLOUD_PROVIDER}" ]]; then
@@ -150,12 +148,8 @@ function launch_testnet() {
     --gpu-mode $startGpuMode $maybeWarpSlot $maybeAsyncNodeInit \
     $maybeExtraPrimordialStakes $maybeAllowPrivateAddr
 
-  if [[ -n "$WAIT_FOR_EQUAL_STAKE" ]]; then
-    wait_for_equal_stake
-  else
-    execution_step "Waiting for bootstrap validator's stake to fall below ${BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD}%"
-    wait_for_max_stake "$BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD"
-  fi
+  execution_step "Waiting for bootstrap validator's stake to fall below ${BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD}%"
+  wait_for_bootstrap_validator_stake_drop "$BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD"
 
   if [[ $NUMBER_OF_CLIENT_NODES -gt 0 ]]; then
     execution_step "Starting ${NUMBER_OF_CLIENT_NODES} client nodes"
@@ -163,24 +157,6 @@ function launch_testnet() {
     # It takes roughly 3 minutes from the time the client nodes return from starting to when they have finished loading the
     # accounts file and actually start sending transactions
     sleep 180
-  fi
-
-  if [[ -n "$WARMUP_SLOTS_BEFORE_TEST" ]]; then
-    # Allow the network to run for a bit before beginning the test
-    while [[ "$WARMUP_SLOTS_BEFORE_TEST" -gt $(get_slot) ]]; do
-      sleep 5
-    done
-  fi
-
-  # Stop the specified number of nodes
-  num_online_nodes=$(( NUMBER_OF_VALIDATOR_NODES + 1 ))
-  if [[ -n "$NUMBER_OF_OFFLINE_NODES" ]]; then
-    execution_step "Stopping $NUMBER_OF_OFFLINE_NODES nodes"
-    for (( i=NUMBER_OF_VALIDATOR_NODES; i>$(( NUMBER_OF_VALIDATOR_NODES - NUMBER_OF_OFFLINE_NODES )); i-- )); do
-      # shellcheck disable=SC2154
-      "${REPO_ROOT}"/net/net.sh stopnode -i "${validatorIpList[$i]}"
-    done
-    num_online_nodes=$(( num_online_nodes - NUMBER_OF_OFFLINE_NODES ))
   fi
 
   SECONDS=0
@@ -200,11 +176,11 @@ function launch_testnet() {
       for (( i=1; i<=PARTITION_ITERATION_COUNT; i++ )); do
         execution_step "Partition Iteration $i of $PARTITION_ITERATION_COUNT"
         execution_step "Applying netem config $NETEM_CONFIG_FILE for $PARTITION_ACTIVE_DURATION seconds"
-        "${REPO_ROOT}"/net/net.sh netem --config-file "$NETEM_CONFIG_FILE" -n $num_online_nodes
+        "${REPO_ROOT}"/net/net.sh netem --config-file "$NETEM_CONFIG_FILE"
         sleep "$PARTITION_ACTIVE_DURATION"
 
         execution_step "Resolving partitions for $PARTITION_INACTIVE_DURATION seconds"
-        "${REPO_ROOT}"/net/net.sh netem --config-file "$NETEM_CONFIG_FILE" --netem-cmd cleanup -n $num_online_nodes
+        "${REPO_ROOT}"/net/net.sh netem --config-file "$NETEM_CONFIG_FILE" --netem-cmd cleanup
         sleep "$PARTITION_INACTIVE_DURATION"
       done
       STATS_FINISH_SECONDS=$SECONDS
@@ -248,7 +224,7 @@ STEP=
 execution_step "Initialize Environment"
 
 [[ -n $TESTNET_TAG ]] || TESTNET_TAG=${CLOUD_PROVIDER}-testnet-automation
-[[ -n $INFLUX_HOST ]] || INFLUX_HOST=https://internal-metrics.solana.com:8086
+[[ -n $INFLUX_HOST ]] || INFLUX_HOST=https://metrics.solana.com:8086
 [[ -n $BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD ]] || BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD=66
 [[ -n $SKIP_PERF_RESULTS ]] || SKIP_PERF_RESULTS=false
 
@@ -355,9 +331,6 @@ TEST_PARAMS_TO_DISPLAY=(CLOUD_PROVIDER \
                         ADDITIONAL_FLAGS \
                         APPLY_PARTITIONS \
                         NETEM_CONFIG_FILE \
-                        WAIT_FOR_EQUAL_STAKE \
-                        WARMUP_SLOTS_BEFORE_TEST \
-                        NUMBER_OF_OFFLINE_NODES \
                         PARTITION_ACTIVE_DURATION \
                         PARTITION_INACTIVE_DURATION \
                         PARTITION_ITERATION_COUNT \

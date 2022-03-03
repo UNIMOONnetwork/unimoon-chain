@@ -1,16 +1,14 @@
 use {
     crate::{
         rpc_config::{
-            RpcAccountInfoConfig, RpcBlockSubscribeConfig, RpcBlockSubscribeFilter,
-            RpcProgramAccountsConfig, RpcSignatureSubscribeConfig, RpcTransactionLogsConfig,
-            RpcTransactionLogsFilter,
+            RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcSignatureSubscribeConfig,
+            RpcTransactionLogsConfig, RpcTransactionLogsFilter,
         },
         rpc_response::{
-            Response as RpcResponse, RpcBlockUpdate, RpcKeyedAccount, RpcLogsResponse,
-            RpcSignatureResult, RpcVote, SlotInfo, SlotUpdate,
+            Response as RpcResponse, RpcKeyedAccount, RpcLogsResponse, RpcSignatureResult,
+            SlotInfo, SlotUpdate,
         },
     },
-    crossbeam_channel::{unbounded, Receiver, Sender},
     log::*,
     serde::de::DeserializeOwned,
     serde_json::{
@@ -22,16 +20,16 @@ use {
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Signature},
     std::{
         marker::PhantomData,
-        net::TcpStream,
         sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc::{channel, Receiver, Sender},
             Arc, RwLock,
         },
         thread::{sleep, JoinHandle},
         time::Duration,
     },
     thiserror::Error,
-    tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket},
+    tungstenite::{client::AutoStream, connect, Message, WebSocket},
     url::{ParseError, Url},
 };
 
@@ -56,7 +54,7 @@ where
 {
     message_type: PhantomData<T>,
     operation: &'static str,
-    socket: Arc<RwLock<WebSocket<MaybeTlsStream<TcpStream>>>>,
+    socket: Arc<RwLock<WebSocket<AutoStream>>>,
     subscription_id: u64,
     t_cleanup: Option<JoinHandle<()>>,
     exit: Arc<AtomicBool>,
@@ -82,7 +80,7 @@ where
     T: DeserializeOwned,
 {
     fn send_subscribe(
-        writable_socket: &Arc<RwLock<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        writable_socket: &Arc<RwLock<WebSocket<AutoStream>>>,
         body: String,
     ) -> Result<u64, PubsubClientError> {
         writable_socket
@@ -124,7 +122,7 @@ where
     }
 
     fn read_message(
-        writable_socket: &Arc<RwLock<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        writable_socket: &Arc<RwLock<WebSocket<AutoStream>>>,
     ) -> Result<T, PubsubClientError> {
         let message = writable_socket.write().unwrap().read_message()?;
         let message_text = &message.into_text().unwrap();
@@ -174,12 +172,6 @@ pub type SignatureSubscription = (
     Receiver<RpcResponse<RpcSignatureResult>>,
 );
 
-pub type PubsubBlockClientSubscription = PubsubClientSubscription<RpcResponse<RpcBlockUpdate>>;
-pub type BlockSubscription = (
-    PubsubBlockClientSubscription,
-    Receiver<RpcResponse<RpcBlockUpdate>>,
-);
-
 pub type PubsubProgramClientSubscription = PubsubClientSubscription<RpcResponse<RpcKeyedAccount>>;
 pub type ProgramSubscription = (
     PubsubProgramClientSubscription,
@@ -192,38 +184,23 @@ pub type AccountSubscription = (
     Receiver<RpcResponse<UiAccount>>,
 );
 
-pub type PubsubVoteClientSubscription = PubsubClientSubscription<RpcVote>;
-pub type VoteSubscription = (PubsubVoteClientSubscription, Receiver<RpcVote>);
-
 pub type PubsubRootClientSubscription = PubsubClientSubscription<Slot>;
 pub type RootSubscription = (PubsubRootClientSubscription, Receiver<Slot>);
 
 pub struct PubsubClient {}
 
-fn connect_with_retry(
-    url: Url,
-) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+fn connect_with_retry(url: Url) -> Result<WebSocket<AutoStream>, tungstenite::Error> {
     let mut connection_retries = 5;
     loop {
         let result = connect(url.clone()).map(|(socket, _)| socket);
-        if let Err(tungstenite::Error::Http(response)) = &result {
-            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && connection_retries > 0
-            {
-                let mut duration = Duration::from_millis(500);
-                if let Some(retry_after) = response.headers().get(reqwest::header::RETRY_AFTER) {
-                    if let Ok(retry_after) = retry_after.to_str() {
-                        if let Ok(retry_after) = retry_after.parse::<u64>() {
-                            if retry_after < 120 {
-                                duration = Duration::from_secs(retry_after);
-                            }
-                        }
-                    }
-                }
+        if let Err(tungstenite::Error::Http(status_code)) = &result {
+            if *status_code == reqwest::StatusCode::TOO_MANY_REQUESTS && connection_retries > 0 {
+                let duration = Duration::from_millis(500) * 2u32.pow(5 - connection_retries);
 
                 connection_retries -= 1;
                 debug!(
                     "Too many requests: server responded with {:?}, {} retries left, pausing for {:?}",
-                    response, connection_retries, duration
+                    status_code, connection_retries, duration
                 );
 
                 sleep(duration);
@@ -242,7 +219,7 @@ impl PubsubClient {
     ) -> Result<AccountSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -276,45 +253,6 @@ impl PubsubClient {
         Ok((result, receiver))
     }
 
-    pub fn block_subscribe(
-        url: &str,
-        filter: RpcBlockSubscribeFilter,
-        config: Option<RpcBlockSubscribeConfig>,
-    ) -> Result<BlockSubscription, PubsubClientError> {
-        let url = Url::parse(url)?;
-        let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
-
-        let socket = Arc::new(RwLock::new(socket));
-        let socket_clone = socket.clone();
-        let exit = Arc::new(AtomicBool::new(false));
-        let exit_clone = exit.clone();
-        let body = json!({
-            "jsonrpc":"2.0",
-            "id":1,
-            "method":"blockSubscribe",
-            "params":[filter, config]
-        })
-        .to_string();
-
-        let subscription_id = PubsubBlockClientSubscription::send_subscribe(&socket_clone, body)?;
-
-        let t_cleanup = std::thread::spawn(move || {
-            Self::cleanup_with_sender(exit_clone, &socket_clone, sender)
-        });
-
-        let result = PubsubClientSubscription {
-            message_type: PhantomData,
-            operation: "block",
-            socket,
-            subscription_id,
-            t_cleanup: Some(t_cleanup),
-            exit,
-        };
-
-        Ok((result, receiver))
-    }
-
     pub fn logs_subscribe(
         url: &str,
         filter: RpcTransactionLogsFilter,
@@ -322,7 +260,7 @@ impl PubsubClient {
     ) -> Result<LogsSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -361,7 +299,7 @@ impl PubsubClient {
     ) -> Result<ProgramSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -395,43 +333,10 @@ impl PubsubClient {
         Ok((result, receiver))
     }
 
-    pub fn vote_subscribe(url: &str) -> Result<VoteSubscription, PubsubClientError> {
-        let url = Url::parse(url)?;
-        let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
-
-        let socket = Arc::new(RwLock::new(socket));
-        let socket_clone = socket.clone();
-        let exit = Arc::new(AtomicBool::new(false));
-        let exit_clone = exit.clone();
-        let body = json!({
-            "jsonrpc":"2.0",
-            "id":1,
-            "method":"voteSubscribe",
-        })
-        .to_string();
-        let subscription_id = PubsubVoteClientSubscription::send_subscribe(&socket_clone, body)?;
-
-        let t_cleanup = std::thread::spawn(move || {
-            Self::cleanup_with_sender(exit_clone, &socket_clone, sender)
-        });
-
-        let result = PubsubClientSubscription {
-            message_type: PhantomData,
-            operation: "vote",
-            socket,
-            subscription_id,
-            t_cleanup: Some(t_cleanup),
-            exit,
-        };
-
-        Ok((result, receiver))
-    }
-
     pub fn root_subscribe(url: &str) -> Result<RootSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -468,7 +373,7 @@ impl PubsubClient {
     ) -> Result<SignatureSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -506,7 +411,7 @@ impl PubsubClient {
     pub fn slot_subscribe(url: &str) -> Result<SlotsSubscription, PubsubClientError> {
         let url = Url::parse(url)?;
         let socket = connect_with_retry(url)?;
-        let (sender, receiver) = unbounded::<SlotInfo>();
+        let (sender, receiver) = channel::<SlotInfo>();
 
         let socket = Arc::new(RwLock::new(socket));
         let socket_clone = socket.clone();
@@ -573,7 +478,7 @@ impl PubsubClient {
 
     fn cleanup_with_sender<T>(
         exit: Arc<AtomicBool>,
-        socket: &Arc<RwLock<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        socket: &Arc<RwLock<WebSocket<AutoStream>>>,
         sender: Sender<T>,
     ) where
         T: DeserializeOwned + Send + 'static,
@@ -589,7 +494,7 @@ impl PubsubClient {
 
     fn cleanup_with_handler<T, F>(
         exit: Arc<AtomicBool>,
-        socket: &Arc<RwLock<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        socket: &Arc<RwLock<WebSocket<AutoStream>>>,
         handler: F,
     ) where
         T: DeserializeOwned,
@@ -615,5 +520,5 @@ impl PubsubClient {
 
 #[cfg(test)]
 mod tests {
-    // see client-test/test/client.rs
+    // see core/tests/client.rs#test_slot_subscription()
 }

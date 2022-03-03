@@ -1,8 +1,5 @@
-//! Persistent storage for accounts.
-//!
-//! For more information, see:
-//!
-//! <https://docs.solana.com/implemented-proposals/persistent-account-storage>
+//! Persistent storage for accounts. For more information, see:
+//! https://docs.solana.com/implemented-proposals/persistent-account-storage
 
 use {
     log::*,
@@ -16,7 +13,6 @@ use {
     },
     std::{
         borrow::Borrow,
-        convert::TryFrom,
         fs::{remove_file, OpenOptions},
         io::{self, Seek, SeekFrom, Write},
         mem,
@@ -30,14 +26,14 @@ use {
 
 // Data placement should be aligned at the next boundary. Without alignment accessing the memory may
 // crash on some architectures.
-pub const ALIGN_BOUNDARY_OFFSET: usize = mem::size_of::<u64>();
+const ALIGN_BOUNDARY_OFFSET: usize = mem::size_of::<u64>();
 macro_rules! u64_align {
     ($addr: expr) => {
         ($addr + (ALIGN_BOUNDARY_OFFSET - 1)) & !(ALIGN_BOUNDARY_OFFSET - 1)
     };
 }
 
-pub const MAXIMUM_APPEND_VEC_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+const MAXIMUM_APPEND_VEC_FILE_SIZE: usize = 16 * 1024 * 1024 * 1024; // 16 GiB
 
 pub type StoredMetaWriteVersion = u64;
 
@@ -260,10 +256,7 @@ impl AppendVec {
                 std::io::ErrorKind::Other,
                 format!("too small file size {} for AppendVec", file_size),
             ))
-        } else if usize::try_from(MAXIMUM_APPEND_VEC_FILE_SIZE)
-            .map(|max| file_size > max)
-            .unwrap_or(true)
-        {
+        } else if file_size > MAXIMUM_APPEND_VEC_FILE_SIZE {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("too large file size {} for AppendVec", file_size),
@@ -286,11 +279,11 @@ impl AppendVec {
         // This mutex forces append to be single threaded, but concurrent with reads
         // See UNSAFE usage in `append_ptr`
         let _lock = self.append_lock.lock().unwrap();
-        self.current_len.store(0, Ordering::Release);
+        self.current_len.store(0, Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
-        self.current_len.load(Ordering::Acquire)
+        self.current_len.load(Ordering::Relaxed)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -301,7 +294,7 @@ impl AppendVec {
         self.file_size
     }
 
-    pub fn file_name(slot: Slot, id: impl std::fmt::Display) -> String {
+    pub fn file_name(slot: Slot, id: usize) -> String {
         format!("{}.{}", slot, id)
     }
 
@@ -360,7 +353,7 @@ impl AppendVec {
             offset = next_offset;
             num_accounts += 1;
         }
-        let aligned_current_len = u64_align!(self.current_len.load(Ordering::Acquire));
+        let aligned_current_len = u64_align!(self.current_len.load(Ordering::Relaxed));
 
         (offset == aligned_current_len, num_accounts)
     }
@@ -419,7 +412,7 @@ impl AppendVec {
         for val in vals {
             self.append_ptr(offset, val.0, val.1)
         }
-        self.current_len.store(*offset, Ordering::Release);
+        self.current_len.store(*offset, Ordering::Relaxed);
         Some(pos)
     }
 

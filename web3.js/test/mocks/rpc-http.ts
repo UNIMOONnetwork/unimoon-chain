@@ -1,10 +1,10 @@
 import bs58 from 'bs58';
 import BN from 'bn.js';
+import invariant from 'assert';
 import * as mockttp from 'mockttp';
 
 import {mockRpcMessage} from './rpc-websockets';
 import {Connection, PublicKey, Transaction, Signer} from '../../src';
-import invariant from '../../src/util/assert';
 import type {Commitment, HttpHeaders, RpcParams} from '../../src/connection';
 
 export const mockServer: mockttp.Mockttp | undefined =
@@ -104,32 +104,6 @@ export const mockRpcResponse = async ({
     );
 };
 
-const latestBlockhash = async ({
-  connection,
-  commitment,
-}: {
-  connection: Connection;
-  commitment?: Commitment;
-}) => {
-  const blockhash = uniqueBlockhash();
-  const params = [];
-  if (commitment) {
-    params.push({commitment});
-  }
-
-  await mockRpcResponse({
-    method: 'getLatestBlockhash',
-    params,
-    value: {
-      blockhash,
-      lastValidBlockHeight: 3090,
-    },
-    withContext: true,
-  });
-
-  return await connection.getLatestBlockhash(commitment);
-};
-
 const recentBlockhash = async ({
   connection,
   commitment,
@@ -171,12 +145,12 @@ const processTransaction = async ({
   commitment: Commitment;
   err?: any;
 }) => {
-  const blockhash = (await latestBlockhash({connection})).blockhash;
+  const blockhash = (await recentBlockhash({connection})).blockhash;
   transaction.recentBlockhash = blockhash;
   transaction.sign(...signers);
 
   const encoded = transaction.serialize().toString('base64');
-  invariant(transaction.signature);
+  invariant(transaction.signature !== null);
   const signature = bs58.encode(transaction.signature);
   await mockRpcResponse({
     method: 'sendTransaction',
@@ -237,5 +211,4 @@ export const helpers = {
   airdrop,
   processTransaction,
   recentBlockhash,
-  latestBlockhash,
 };

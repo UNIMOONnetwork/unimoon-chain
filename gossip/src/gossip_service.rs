@@ -5,7 +5,6 @@ use {
         cluster_info::{ClusterInfo, VALIDATOR_PORT_RANGE},
         contact_info::ContactInfo,
     },
-    crossbeam_channel::{unbounded, Sender},
     rand::{thread_rng, Rng},
     solana_client::thin_client::{create_client, ThinClient},
     solana_perf::recycler::Recycler,
@@ -20,6 +19,7 @@ use {
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc::channel,
             Arc, RwLock,
         },
         thread::{self, sleep, JoinHandle},
@@ -38,10 +38,9 @@ impl GossipService {
         gossip_socket: UdpSocket,
         gossip_validators: Option<HashSet<Pubkey>>,
         should_check_duplicate_instance: bool,
-        stats_reporter_sender: Option<Sender<Box<dyn FnOnce() + Send>>>,
         exit: &Arc<AtomicBool>,
     ) -> Self {
-        let (request_sender, request_receiver) = unbounded();
+        let (request_sender, request_receiver) = channel();
         let gossip_socket = Arc::new(gossip_socket);
         trace!(
             "GossipService: id: {}, listening on: {:?}",
@@ -58,13 +57,15 @@ impl GossipService {
             1,
             false,
         );
-        let (consume_sender, listen_receiver) = unbounded();
+        let (consume_sender, listen_receiver) = channel();
+        // https://github.com/rust-lang/rust/issues/39364#issuecomment-634545136
+        let _consume_sender = consume_sender.clone();
         let t_socket_consume = cluster_info.clone().start_socket_consume_thread(
             request_receiver,
             consume_sender,
             exit.clone(),
         );
-        let (response_sender, response_receiver) = unbounded();
+        let (response_sender, response_receiver) = channel();
         let t_listen = cluster_info.clone().listen(
             bank_forks.clone(),
             listen_receiver,
@@ -78,12 +79,15 @@ impl GossipService {
             gossip_validators,
             exit.clone(),
         );
+        // To work around:
+        // https://github.com/rust-lang/rust/issues/54267
+        // responder thread should start after response_sender.clone(). see:
+        // https://github.com/rust-lang/rust/issues/39364#issuecomment-381446873
         let t_responder = streamer::responder(
             "gossip",
             gossip_socket,
             response_receiver,
             socket_addr_space,
-            stats_reporter_sender,
         );
         let thread_hdls = vec![
             t_receiver,
@@ -125,7 +129,7 @@ pub fn discover_cluster(
 }
 
 pub fn discover(
-    keypair: Option<Keypair>,
+    keypair: Option<Arc<Keypair>>,
     entrypoint: Option<&SocketAddr>,
     num_nodes: Option<usize>, // num_nodes only counts validators, excludes spy nodes
     timeout: Duration,
@@ -138,7 +142,8 @@ pub fn discover(
     Vec<ContactInfo>, // all gossip peers
     Vec<ContactInfo>, // tvu peers (validators)
 )> {
-    let keypair = keypair.unwrap_or_else(Keypair::new);
+    let keypair = keypair.unwrap_or_else(|| Arc::new(Keypair::new()));
+
     let exit = Arc::new(AtomicBool::new(false));
     let (gossip_service, ip_echo, spy_ref) = make_gossip_node(
         keypair,
@@ -302,8 +307,8 @@ fn spy(
 
 /// Makes a spy or gossip node based on whether or not a gossip_addr was passed in
 /// Pass in a gossip addr to fully participate in gossip instead of relying on just pulls
-pub fn make_gossip_node(
-    keypair: Keypair,
+fn make_gossip_node(
+    keypair: Arc<Keypair>,
     entrypoint: Option<&SocketAddr>,
     exit: &Arc<AtomicBool>,
     gossip_addr: Option<&SocketAddr>,
@@ -312,11 +317,11 @@ pub fn make_gossip_node(
     socket_addr_space: SocketAddrSpace,
 ) -> (GossipService, Option<TcpListener>, Arc<ClusterInfo>) {
     let (node, gossip_socket, ip_echo) = if let Some(gossip_addr) = gossip_addr {
-        ClusterInfo::gossip_node(keypair.pubkey(), gossip_addr, shred_version)
+        ClusterInfo::gossip_node(&keypair.pubkey(), gossip_addr, shred_version)
     } else {
-        ClusterInfo::spy_node(keypair.pubkey(), shred_version)
+        ClusterInfo::spy_node(&keypair.pubkey(), shred_version)
     };
-    let cluster_info = ClusterInfo::new(node, Arc::new(keypair), socket_addr_space);
+    let cluster_info = ClusterInfo::new(node, keypair, socket_addr_space);
     if let Some(entrypoint) = entrypoint {
         cluster_info.set_entrypoint(ContactInfo::new_gossip_entry_point(entrypoint));
     }
@@ -327,7 +332,6 @@ pub fn make_gossip_node(
         gossip_socket,
         None,
         should_check_duplicate_instance,
-        None,
         exit,
     );
     (gossip_service, ip_echo, cluster_info)
@@ -359,7 +363,6 @@ mod tests {
             tn.sockets.gossip,
             None,
             true, // should_check_duplicate_instance
-            None,
             &exit,
         );
         exit.store(true, Ordering::Relaxed);

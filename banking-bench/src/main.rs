@@ -1,7 +1,7 @@
 #![allow(clippy::integer_arithmetic)]
 use {
     clap::{crate_description, crate_name, value_t, App, Arg},
-    crossbeam_channel::{unbounded, Receiver},
+    crossbeam_channel::unbounded,
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
@@ -11,7 +11,6 @@ use {
         blockstore::Blockstore,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
         get_tmp_ledger_path,
-        leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
     solana_perf::packet::to_packet_batches,
@@ -29,7 +28,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
-        sync::{atomic::Ordering, Arc, Mutex, RwLock},
+        sync::{atomic::Ordering, mpsc::Receiver, Arc, Mutex, RwLock},
         thread::sleep,
         time::{Duration, Instant},
     },
@@ -171,14 +170,9 @@ fn main() {
     let (vote_sender, vote_receiver) = unbounded();
     let (tpu_vote_sender, tpu_vote_receiver) = unbounded();
     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
-    let bank0 = Bank::new_for_benches(&genesis_config);
+    let bank0 = Bank::new(&genesis_config);
     let mut bank_forks = BankForks::new(bank0);
     let mut bank = bank_forks.working_bank();
-
-    // set cost tracker limits to MAX so it will not filter out TXs
-    bank.write_cost_tracker()
-        .unwrap()
-        .set_limits(std::u64::MAX, std::u64::MAX, std::u64::MAX);
 
     info!("threads: {} txs: {}", num_threads, total_num_transactions);
 
@@ -210,8 +204,7 @@ fn main() {
         });
         bank.clear_signatures();
         //sanity check, make sure all the transactions can execute in parallel
-
-        let res = bank.process_transactions(transactions.iter());
+        let res = bank.process_transactions(&transactions);
         for r in res {
             assert!(r.is_ok(), "sanity parallel execution error: {:?}", r);
         }
@@ -224,13 +217,8 @@ fn main() {
         let blockstore = Arc::new(
             Blockstore::open(&ledger_path).expect("Expected to be able to open database ledger"),
         );
-        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
-        let (exit, poh_recorder, poh_service, signal_receiver) = create_test_recorder(
-            &bank,
-            &blockstore,
-            None,
-            Some(leader_schedule_cache.clone()),
-        );
+        let (exit, poh_recorder, poh_service, signal_receiver) =
+            create_test_recorder(&bank, &blockstore, None);
         let cluster_info = ClusterInfo::new(
             Node::new_localhost().info,
             Arc::new(Keypair::new()),
@@ -325,10 +313,11 @@ fn main() {
                 tx_total_us += duration_as_us(&now.elapsed());
 
                 let mut poh_time = Measure::start("poh_time");
-                poh_recorder
-                    .lock()
-                    .unwrap()
-                    .reset(bank.clone(), Some((bank.slot(), bank.slot() + 1)));
+                poh_recorder.lock().unwrap().reset(
+                    bank.last_blockhash(),
+                    bank.slot(),
+                    Some((bank.slot(), bank.slot() + 1)),
+                );
                 poh_time.stop();
 
                 let mut new_bank_time = Measure::start("new_bank");
@@ -340,17 +329,9 @@ fn main() {
                 bank = bank_forks.working_bank();
                 insert_time.stop();
 
-                // set cost tracker limits to MAX so it will not filter out TXs
-                bank.write_cost_tracker().unwrap().set_limits(
-                    std::u64::MAX,
-                    std::u64::MAX,
-                    std::u64::MAX,
-                );
-
                 poh_recorder.lock().unwrap().set_bank(&bank);
                 assert!(poh_recorder.lock().unwrap().bank().is_some());
                 if bank.slot() > 32 {
-                    leader_schedule_cache.set_root(&bank);
                     bank_forks.set_root(root, &AbsRequestSender::default(), None);
                     root += 1;
                 }

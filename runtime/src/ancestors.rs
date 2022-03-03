@@ -1,21 +1,10 @@
-use {
-    crate::accounts_index::RollingBitField,
-    core::fmt::{Debug, Formatter},
-    solana_sdk::clock::Slot,
-    std::collections::HashMap,
-};
+use {crate::accounts_index::RollingBitField, solana_sdk::clock::Slot, std::collections::HashMap};
 
 pub type AncestorsForSerialization = HashMap<Slot, usize>;
 
-#[derive(Clone, PartialEq, AbiExample)]
+#[derive(Debug, Clone, PartialEq, AbiExample)]
 pub struct Ancestors {
     ancestors: RollingBitField,
-}
-
-impl Debug for Ancestors {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self.keys())
-    }
 }
 
 // some tests produce ancestors ranges that are too large such
@@ -86,7 +75,7 @@ impl Ancestors {
     }
 
     pub fn max_slot(&self) -> Slot {
-        self.ancestors.max_exclusive().saturating_sub(1)
+        self.ancestors.max() - 1
     }
 }
 #[cfg(test)]

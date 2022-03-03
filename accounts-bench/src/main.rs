@@ -62,12 +62,13 @@ fn main() {
     if fs::remove_dir_all(path.clone()).is_err() {
         println!("Warning: Couldn't remove {:?}", path);
     }
-    let accounts = Accounts::new_with_config_for_benches(
+    let accounts = Accounts::new_with_config(
         vec![path],
         &ClusterType::Testnet,
         AccountSecondaryIndexes::default(),
         false,
         AccountShrinkThreshold::default(),
+        None,
     );
     println!("Creating {} accounts", num_accounts);
     let mut create_time = Measure::start("create accounts");
@@ -104,7 +105,7 @@ fn main() {
     for x in 0..iterations {
         if clean {
             let mut time = Measure::start("clean");
-            accounts.accounts_db.clean_accounts(None, false, None);
+            accounts.accounts_db.clean_accounts(None, false);
             time.stop();
             println!("{}", time);
             for slot in 0..num_slots {
@@ -125,7 +126,6 @@ fn main() {
                 None,
                 false,
                 None,
-                false,
             );
             time_store.stop();
             if results != results_store {

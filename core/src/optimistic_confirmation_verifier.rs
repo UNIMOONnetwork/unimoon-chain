@@ -142,7 +142,7 @@ impl OptimisticConfirmationVerifier {
 #[cfg(test)]
 mod test {
     use {
-        super::*, crate::vote_simulator::VoteSimulator, solana_ledger::get_tmp_ledger_path,
+        super::*, crate::consensus::test::VoteSimulator, solana_ledger::get_tmp_ledger_path,
         solana_runtime::bank::Bank, solana_sdk::pubkey::Pubkey, std::collections::HashMap,
         trees::tr,
     };
@@ -343,7 +343,7 @@ mod test {
         let forks = tr(0) / (tr(1) / (tr(2) / (tr(4))) / (tr(3) / (tr(5) / (tr(6)))));
 
         let mut vote_simulator = VoteSimulator::new(1);
-        vote_simulator.fill_bank_forks(forks, &HashMap::new(), true);
+        vote_simulator.fill_bank_forks(forks, &HashMap::new());
         vote_simulator
     }
 }

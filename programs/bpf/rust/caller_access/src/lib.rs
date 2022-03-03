@@ -1,16 +1,15 @@
-use {
-    solana_program::{
-        account_info::AccountInfo,
-        entrypoint::ProgramResult,
-        instruction::{AccountMeta, Instruction},
-        msg,
-        program::invoke,
-        pubkey::Pubkey,
-    },
-    std::convert::TryInto,
+use solana_program::{
+    account_info::AccountInfo,
+    entrypoint,
+    entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
+    msg,
+    program::invoke,
+    pubkey::Pubkey,
 };
+use std::convert::TryInto;
 
-solana_program::entrypoint!(process_instruction);
+entrypoint!(process_instruction);
 fn process_instruction(
     program_id: &Pubkey,
     accounts: &[AccountInfo],

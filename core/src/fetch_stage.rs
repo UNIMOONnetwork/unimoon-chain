@@ -5,18 +5,18 @@ use {
         banking_stage::HOLD_TRANSACTIONS_SLOT_OFFSET,
         result::{Error, Result},
     },
-    crossbeam_channel::{unbounded, RecvTimeoutError},
     solana_metrics::{inc_new_counter_debug, inc_new_counter_info},
     solana_perf::{packet::PacketBatchRecycler, recycler::Recycler},
     solana_poh::poh_recorder::PohRecorder,
-    solana_sdk::{
-        clock::DEFAULT_TICKS_PER_SLOT,
-        packet::{Packet, PacketFlags},
-    },
+    solana_sdk::{clock::DEFAULT_TICKS_PER_SLOT, packet::Packet},
     solana_streamer::streamer::{self, PacketBatchReceiver, PacketBatchSender},
     std::{
         net::UdpSocket,
-        sync::{atomic::AtomicBool, Arc, Mutex},
+        sync::{
+            atomic::AtomicBool,
+            mpsc::{channel, RecvTimeoutError},
+            Arc, Mutex,
+        },
         thread::{self, Builder, JoinHandle},
     },
 };
@@ -35,8 +35,8 @@ impl FetchStage {
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         coalesce_ms: u64,
     ) -> (Self, PacketBatchReceiver, PacketBatchReceiver) {
-        let (sender, receiver) = unbounded();
-        let (vote_sender, vote_receiver) = unbounded();
+        let (sender, receiver) = channel();
+        let (vote_sender, vote_receiver) = channel();
         (
             Self::new_with_sender(
                 sockets,
@@ -45,7 +45,7 @@ impl FetchStage {
                 exit,
                 &sender,
                 &vote_sender,
-                poh_recorder,
+                &poh_recorder,
                 coalesce_ms,
             ),
             receiver,
@@ -84,7 +84,7 @@ impl FetchStage {
         poh_recorder: &Arc<Mutex<PohRecorder>>,
     ) -> Result<()> {
         let mark_forwarded = |packet: &mut Packet| {
-            packet.meta.flags |= PacketFlags::FORWARDED;
+            packet.meta.forwarded = true;
         };
 
         let mut packet_batch = recvr.recv()?;
@@ -108,7 +108,6 @@ impl FetchStage {
         {
             inc_new_counter_debug!("fetch_stage-honor_forwards", num_packets);
             for packet_batch in packet_batches {
-                #[allow(clippy::question_mark)]
                 if sendr.send(packet_batch).is_err() {
                     return Err(Error::Send);
                 }
@@ -144,7 +143,7 @@ impl FetchStage {
             )
         });
 
-        let (forward_sender, forward_receiver) = unbounded();
+        let (forward_sender, forward_receiver) = channel();
         let tpu_forwards_threads = tpu_forwards_sockets.into_iter().map(|socket| {
             streamer::receiver(
                 socket,
@@ -160,7 +159,7 @@ impl FetchStage {
         let tpu_vote_threads = tpu_vote_sockets.into_iter().map(|socket| {
             streamer::receiver(
                 socket,
-                exit,
+                &exit,
                 vote_sender.clone(),
                 recycler.clone(),
                 "fetch_vote_stage",

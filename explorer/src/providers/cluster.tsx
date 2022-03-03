@@ -64,7 +64,8 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
   switch (cluster) {
     case Cluster.Devnet:
       // return DEVNET_URL.replace("api", "explorer-api");
-      return "http://explorer.unimoon.io:8899/";
+      // return "http://explorer.unimoon.io:8899/";
+      return "http://159.100.250.220:8899/";
     case Cluster.MainnetBeta:
       return MAINNET_BETA_URL.replace("api", "explorer-api");
     case Cluster.Testnet:

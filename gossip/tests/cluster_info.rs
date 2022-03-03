@@ -1,6 +1,5 @@
 #![allow(clippy::integer_arithmetic)]
 use {
-    crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError},
     rayon::{iter::ParallelIterator, prelude::*},
     serial_test::serial,
     solana_gossip::{
@@ -12,7 +11,10 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     std::{
         collections::{HashMap, HashSet},
-        sync::{Arc, Mutex},
+        sync::{
+            mpsc::{channel, Receiver, Sender, TryRecvError},
+            Arc, Mutex,
+        },
         time::Instant,
     },
 };
@@ -88,7 +90,7 @@ fn run_simulation(stakes: &[u64], fanout: usize) {
     let mut staked_nodes = HashMap::new();
 
     // setup accounts for all nodes (leader has 0 bal)
-    let (s, r) = unbounded();
+    let (s, r) = channel();
     let senders: Arc<Mutex<HashMap<Pubkey, Sender<(i32, bool)>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     senders.lock().unwrap().insert(leader_info.id, s);
@@ -107,7 +109,7 @@ fn run_simulation(stakes: &[u64], fanout: usize) {
             let node = ContactInfo::new_localhost(&solana_sdk::pubkey::new_rand(), 0);
             staked_nodes.insert(node.id, stakes[*i - 1]);
             cluster_info.insert_info(node.clone());
-            let (s, r) = unbounded();
+            let (s, r) = channel();
             batches
                 .get_mut(batch_ix)
                 .unwrap()

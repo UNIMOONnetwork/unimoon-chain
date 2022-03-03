@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import matplotlib
 matplotlib.use('Agg')
@@ -11,7 +11,7 @@ stages_to_counters = {}
 stages_to_time = {}
 
 if len(sys.argv) != 2:
-    print(f"USAGE: {sys.argv[0]} <input file>")
+    print("USAGE: {} <input file>".format(sys.argv[0]))
     sys.exit(1)
 
 with open(sys.argv[1]) as fh:

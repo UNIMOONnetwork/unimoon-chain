@@ -1,4 +1,4 @@
-//! A nonblocking [`RpcSender`] used for unit testing [`RpcClient`](crate::rpc_client::RpcClient).
+//! An [`RpcSender`] used for unit testing [`RpcClient`](crate::rpc_client::RpcClient).
 
 use {
     crate::{
@@ -6,16 +6,15 @@ use {
         rpc_config::RpcBlockProductionConfig,
         rpc_request::RpcRequest,
         rpc_response::{
-            Response, RpcAccountBalance, RpcBlockProduction, RpcBlockProductionRange, RpcBlockhash,
+            Response, RpcAccountBalance, RpcBlockProduction, RpcBlockProductionRange,
             RpcConfirmedTransactionStatusWithSignature, RpcContactInfo, RpcFees, RpcIdentity,
             RpcInflationGovernor, RpcInflationRate, RpcInflationReward, RpcKeyedAccount,
-            RpcPerfSample, RpcResponseContext, RpcSimulateTransactionResult, RpcSnapshotSlotInfo,
-            RpcStakeActivation, RpcSupply, RpcVersionInfo, RpcVoteAccountInfo,
-            RpcVoteAccountStatus, StakeActivationState,
+            RpcPerfSample, RpcResponseContext, RpcSimulateTransactionResult, RpcStakeActivation,
+            RpcSupply, RpcVersionInfo, RpcVoteAccountInfo, RpcVoteAccountStatus,
+            StakeActivationState,
         },
         rpc_sender::*,
     },
-    async_trait::async_trait,
     serde_json::{json, Number, Value},
     solana_account_decoder::{UiAccount, UiAccountEncoding},
     solana_sdk::{
@@ -31,7 +30,7 @@ use {
         transaction::{self, Transaction, TransactionError},
     },
     solana_transaction_status::{
-        EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction,
+        EncodedConfirmedBlock, EncodedConfirmedTransaction, EncodedTransaction,
         EncodedTransactionWithStatusMeta, Rewards, TransactionConfirmationStatus,
         TransactionStatus, UiCompiledInstruction, UiMessage, UiRawMessage, UiTransaction,
         UiTransactionEncoding, UiTransactionStatusMeta,
@@ -41,6 +40,8 @@ use {
 };
 
 pub const PUBKEY: &str = "7RoSF9fUmdphVCpabEoefH81WwrW7orsWonXWqTXkKV8";
+pub const SIGNATURE: &str =
+    "43yNSFC6fYTuPgTNFFhF4axw7AfWxB2BPdurme8yrsWEYwm8299xh8n6TAHjGymiSub1XtyxTNyd9GBfY2hxoBw8";
 
 pub type Mocks = HashMap<RpcRequest, Value>;
 pub struct MockSender {
@@ -86,17 +87,12 @@ impl MockSender {
     }
 }
 
-#[async_trait]
 impl RpcSender for MockSender {
     fn get_transport_stats(&self) -> RpcTransportStats {
         RpcTransportStats::default()
     }
 
-    async fn send(
-        &self,
-        request: RpcRequest,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    fn send(&self, request: RpcRequest, params: serde_json::Value) -> Result<serde_json::Value> {
         if let Some(value) = self.mocks.write().unwrap().remove(&request) {
             return Ok(value);
         }
@@ -150,8 +146,8 @@ impl RpcSender for MockSender {
                 value: serde_json::to_value(RpcFees {
                     blockhash: PUBKEY.to_string(),
                     fee_calculator: FeeCalculator::default(),
-                    last_valid_slot: 42,
-                    last_valid_block_height: 42,
+                    last_valid_slot: 1234,
+                    last_valid_block_height: 1234,
                 })
                 .unwrap(),
             })?,
@@ -189,7 +185,7 @@ impl RpcSender for MockSender {
                     value: statuses,
                 })?
             }
-            "getTransaction" => serde_json::to_value(EncodedConfirmedTransactionWithStatusMeta {
+            "getTransaction" => serde_json::to_value(EncodedConfirmedTransaction {
                 slot: 2,
                 transaction: EncodedTransactionWithStatusMeta {
                     transaction: EncodedTransaction::Json(
@@ -235,10 +231,6 @@ impl RpcSender for MockSender {
             "getMaxShredInsertSlot" => json![0],
             "requestAirdrop" => Value::String(Signature::new(&[8; 64]).to_string()),
             "getSnapshotSlot" => Value::Number(Number::from(0)),
-            "getHighestSnapshotSlot" => json!(RpcSnapshotSlotInfo {
-                full: 100,
-                incremental: Some(110),
-            }),
             "getBlockHeight" => Value::Number(Number::from(1234)),
             "getSlotLeaders" => json!([PUBKEY]),
             "getBlockProduction" => {
@@ -336,7 +328,6 @@ impl RpcSender for MockSender {
                     err: None,
                     logs: None,
                     accounts: None,
-                    units_consumed: None,
                 },
             })?,
             "getMinimumBalanceForRentExemption" => json![20],
@@ -347,17 +338,6 @@ impl RpcSender for MockSender {
                     feature_set: Some(version.feature_set),
                 })
             }
-            "getLatestBlockhash" => serde_json::to_value(Response {
-                context: RpcResponseContext { slot: 1 },
-                value: RpcBlockhash {
-                    blockhash: PUBKEY.to_string(),
-                    last_valid_block_height: 1234,
-                },
-            })?,
-            "getFeeForMessage" => serde_json::to_value(Response {
-                context: RpcResponseContext { slot: 1 },
-                value: json!(Some(0)),
-            })?,
             "getClusterNodes" => serde_json::to_value(vec![RpcContactInfo {
                 pubkey: PUBKEY.to_string(),
                 gossip: Some(SocketAddr::from(([10, 239, 6, 48], 8899))),
@@ -390,7 +370,7 @@ impl RpcSender for MockSender {
             "getBlocksWithLimit" => serde_json::to_value(vec![1, 2, 3])?,
             "getSignaturesForAddress" => {
                 serde_json::to_value(vec![RpcConfirmedTransactionStatusWithSignature {
-                    signature: crate::mock_sender_for_cli::SIGNATURE.to_string(),
+                    signature: SIGNATURE.to_string(),
                     slot: 123,
                     err: None,
                     memo: None,
@@ -439,7 +419,7 @@ impl RpcSender for MockSender {
                 value: vec![Value::Null, Value::Null]
             })?,
             "getProgramAccounts" => {
-                let pubkey = Pubkey::from_str(PUBKEY).unwrap();
+                let pubkey = Pubkey::from_str(&PUBKEY.to_string()).unwrap();
                 let account = Account {
                     lamports: 1_000_000,
                     data: vec![],

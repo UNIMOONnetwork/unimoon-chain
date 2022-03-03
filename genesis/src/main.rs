@@ -1,6 +1,9 @@
 //! A command-line executable for generating the chain's genesis config.
 #![allow(clippy::integer_arithmetic)]
 
+#[macro_use]
+extern crate solana_exchange_program;
+
 use {
     clap::{crate_description, crate_name, value_t, value_t_or_exit, App, Arg, ArgMatches},
     solana_clap_utils::{
@@ -11,9 +14,10 @@ use {
             is_pubkey_or_keypair, is_rfc3339_datetime, is_slot, is_valid_percentage,
         },
     },
-    solana_entry::poh::compute_hashes_per_tick,
     solana_genesis::{genesis_accounts::add_genesis_accounts, Base64Account},
-    solana_ledger::{blockstore::create_new_ledger, blockstore_db::AccessType},
+    solana_ledger::{
+        blockstore::create_new_ledger, blockstore_db::AccessType, poh::compute_hashes_per_tick,
+    },
     solana_runtime::hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount, WritableAccount},
@@ -60,7 +64,7 @@ fn pubkey_from_str(key_str: &str) -> Result<Pubkey, Box<dyn error::Error>> {
 
 pub fn load_genesis_accounts(file: &str, genesis_config: &mut GenesisConfig) -> io::Result<u64> {
     let mut lamports = 0;
-    let accounts_file = File::open(file)?;
+    let accounts_file = File::open(file.to_string())?;
 
     let genesis_accounts: HashMap<String, Base64Account> =
         serde_yaml::from_reader(accounts_file)
@@ -492,8 +496,14 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         matches.is_present("enable_warmup_epochs"),
     );
 
+    let native_instruction_processors = if cluster_type == ClusterType::Development {
+        vec![solana_exchange_program!()]
+    } else {
+        vec![]
+    };
+
     let mut genesis_config = GenesisConfig {
-        native_instruction_processors: vec![],
+        native_instruction_processors,
         ticks_per_slot,
         poh_config,
         fee_rate_governor,

@@ -1,5 +1,3 @@
-import type {Buffer} from 'buffer';
-
 import {Connection} from '../connection';
 import type {TransactionSignature} from '../transaction';
 import type {ConfirmOptions} from '../connection';

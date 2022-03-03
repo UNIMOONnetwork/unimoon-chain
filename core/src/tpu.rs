@@ -13,7 +13,7 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
     },
-    crossbeam_channel::{unbounded, Receiver},
+    crossbeam_channel::unbounded,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
@@ -26,23 +26,18 @@ use {
         cost_model::CostModel,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_sdk::signature::Keypair,
     std::{
         net::UdpSocket,
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{
+            atomic::AtomicBool,
+            mpsc::{channel, Receiver},
+            Arc, Mutex, RwLock,
+        },
         thread,
     },
 };
 
 pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
-
-pub struct TpuSockets {
-    pub transactions: Vec<UdpSocket>,
-    pub transaction_forwards: Vec<UdpSocket>,
-    pub vote: Vec<UdpSocket>,
-    pub broadcast: Vec<UdpSocket>,
-    pub transactions_quic: UdpSocket,
-}
 
 pub struct Tpu {
     fetch_stage: FetchStage,
@@ -51,7 +46,6 @@ pub struct Tpu {
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
-    tpu_quic_t: thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -61,7 +55,10 @@ impl Tpu {
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         entry_receiver: Receiver<WorkingBankEntry>,
         retransmit_slots_receiver: RetransmitSlotsReceiver,
-        sockets: TpuSockets,
+        transactions_sockets: Vec<UdpSocket>,
+        tpu_forwards_sockets: Vec<UdpSocket>,
+        tpu_vote_sockets: Vec<UdpSocket>,
+        broadcast_sockets: Vec<UdpSocket>,
         subscriptions: &Arc<RpcSubscriptions>,
         transaction_status_sender: Option<TransactionStatusSender>,
         blockstore: &Arc<Blockstore>,
@@ -78,18 +75,9 @@ impl Tpu {
         tpu_coalesce_ms: u64,
         cluster_confirmed_slot_sender: GossipDuplicateConfirmedSlotsSender,
         cost_model: &Arc<RwLock<CostModel>>,
-        keypair: &Keypair,
     ) -> Self {
-        let TpuSockets {
-            transactions: transactions_sockets,
-            transaction_forwards: tpu_forwards_sockets,
-            vote: tpu_vote_sockets,
-            broadcast: broadcast_sockets,
-            transactions_quic: transactions_quic_sockets,
-        } = sockets;
-
-        let (packet_sender, packet_receiver) = unbounded();
-        let (vote_packet_sender, vote_packet_receiver) = unbounded();
+        let (packet_sender, packet_receiver) = channel();
+        let (vote_packet_sender, vote_packet_receiver) = channel();
         let fetch_stage = FetchStage::new_with_sender(
             transactions_sockets,
             tpu_forwards_sockets,
@@ -101,15 +89,6 @@ impl Tpu {
             tpu_coalesce_ms,
         );
         let (verified_sender, verified_receiver) = unbounded();
-
-        let tpu_quic_t = solana_streamer::quic::spawn_server(
-            transactions_quic_sockets,
-            keypair,
-            cluster_info.my_contact_info().tpu.ip(),
-            packet_sender,
-            exit.clone(),
-        )
-        .unwrap();
 
         let sigverify_stage = {
             let verifier = TransactionSigVerifier::default();
@@ -174,7 +153,6 @@ impl Tpu {
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
-            tpu_quic_t,
         }
     }
 
@@ -186,7 +164,6 @@ impl Tpu {
             self.cluster_info_vote_listener.join(),
             self.banking_stage.join(),
         ];
-        self.tpu_quic_t.join()?;
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
             result?;

@@ -202,6 +202,15 @@ pub mod tests {
                 .push((slot, account.clone_account()));
         }
 
+        /// Notified when a slot is optimistically confirmed
+        fn notify_slot_confirmed(&self, _slot: Slot, _parent: Option<Slot>) {}
+
+        /// Notified when a slot is marked frozen.
+        fn notify_slot_processed(&self, _slot: Slot, _parent: Option<Slot>) {}
+
+        /// Notified when a slot is rooted.
+        fn notify_slot_rooted(&self, _slot: Slot, _parent: Option<Slot>) {}
+
         fn notify_end_of_restore_from_snapshot(&self) {
             self.is_startup_done.store(true, Ordering::Relaxed);
         }
@@ -209,7 +218,7 @@ pub mod tests {
 
     #[test]
     fn test_notify_account_restore_from_snapshot_once_per_slot() {
-        let mut accounts = AccountsDb::new_single_for_tests();
+        let mut accounts = AccountsDb::new_single();
         // Account with key1 is updated twice in the store -- should only get notified once.
         let key1 = solana_sdk::pubkey::new_rand();
         let mut account1_lamports: u64 = 1;
@@ -258,7 +267,7 @@ pub mod tests {
 
     #[test]
     fn test_notify_account_restore_from_snapshot_once_across_slots() {
-        let mut accounts = AccountsDb::new_single_for_tests();
+        let mut accounts = AccountsDb::new_single();
         // Account with key1 is updated twice in two different slots -- should only get notified once.
         // Account with key2 is updated slot0, should get notified once
         // Account with key3 is updated in slot1, should get notified once

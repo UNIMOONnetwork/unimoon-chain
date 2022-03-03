@@ -1,10 +1,8 @@
 //! Example Rust-based BPF program tests dependent crates
 
 extern crate solana_program;
-use {
-    byteorder::{ByteOrder, LittleEndian},
-    solana_program::entrypoint::SUCCESS,
-};
+use byteorder::{ByteOrder, LittleEndian};
+use solana_program::entrypoint::SUCCESS;
 
 #[no_mangle]
 pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {

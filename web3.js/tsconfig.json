@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "esnext",
     "allowJs": true,
+    "skipLibCheck": true,
     "declaration": true,
     "declarationDir": "declarations",
     "esModuleInterop": true,

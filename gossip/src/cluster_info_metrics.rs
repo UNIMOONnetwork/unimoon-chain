@@ -7,7 +7,10 @@ use {
         cmp::Reverse,
         collections::HashMap,
         ops::{Deref, DerefMut},
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            RwLock,
+        },
         time::Instant,
     },
 };
@@ -133,7 +136,6 @@ pub(crate) struct GossipStats {
     pub(crate) process_pull_response_success: Counter,
     pub(crate) process_pull_response_timeout: Counter,
     pub(crate) process_push_message: Counter,
-    pub(crate) process_push_success: Counter,
     pub(crate) prune_message_count: Counter,
     pub(crate) prune_message_len: Counter,
     pub(crate) prune_received_cache: Counter,
@@ -146,6 +148,7 @@ pub(crate) struct GossipStats {
     pub(crate) push_response_count: Counter,
     pub(crate) push_vote_read: Counter,
     pub(crate) repair_peers: Counter,
+    pub(crate) require_stake_for_gossip_unknown_feature_set: Counter,
     pub(crate) require_stake_for_gossip_unknown_stakes: Counter,
     pub(crate) skip_pull_response_shred_version: Counter,
     pub(crate) skip_pull_shred_version: Counter,
@@ -159,18 +162,18 @@ pub(crate) struct GossipStats {
 
 pub(crate) fn submit_gossip_stats(
     stats: &GossipStats,
-    gossip: &CrdsGossip,
+    gossip: &RwLock<CrdsGossip>,
     stakes: &HashMap<Pubkey, u64>,
 ) {
     let (crds_stats, table_size, num_nodes, num_pubkeys, purged_values_size, failed_inserts_size) = {
-        let gossip_crds = gossip.crds.read().unwrap();
+        let gossip = gossip.read().unwrap();
         (
-            gossip_crds.take_stats(),
-            gossip_crds.len(),
-            gossip_crds.num_nodes(),
-            gossip_crds.num_pubkeys(),
-            gossip_crds.num_purged(),
-            gossip.pull.failed_inserts_size(),
+            gossip.crds.take_stats(),
+            gossip.crds.len(),
+            gossip.crds.num_nodes(),
+            gossip.crds.num_pubkeys(),
+            gossip.crds.num_purged(),
+            gossip.pull.failed_inserts.len(),
         )
     };
     let num_nodes_staked = stakes.values().filter(|stake| **stake > 0).count();
@@ -205,11 +208,6 @@ pub(crate) fn submit_gossip_stats(
         ("repair_peers", stats.repair_peers.clear(), i64),
         ("new_push_requests", stats.new_push_requests.clear(), i64),
         ("new_push_requests2", stats.new_push_requests2.clear(), i64),
-        (
-            "process_push_success",
-            stats.process_push_success.clear(),
-            i64
-        ),
         ("purge", stats.purge.clear(), i64),
         (
             "process_gossip_packets_time",
@@ -430,6 +428,11 @@ pub(crate) fn submit_gossip_stats(
         (
             "packets_sent_push_messages_count",
             stats.packets_sent_push_messages_count.clear(),
+            i64
+        ),
+        (
+            "require_stake_for_gossip_unknown_feature_set",
+            stats.require_stake_for_gossip_unknown_feature_set.clear(),
             i64
         ),
         (

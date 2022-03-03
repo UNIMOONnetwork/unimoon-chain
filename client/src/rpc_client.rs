@@ -7,64 +7,68 @@
 //! [JSON-RPC]: https://www.jsonrpc.org/specification
 
 #[allow(deprecated)]
-use crate::rpc_deprecated_config::{RpcConfirmedBlockConfig, RpcConfirmedTransactionConfig};
+use crate::rpc_deprecated_config::{
+    RpcConfirmedBlockConfig, RpcConfirmedTransactionConfig,
+    RpcGetConfirmedSignaturesForAddress2Config,
+};
 use {
     crate::{
-        client_error::Result as ClientResult,
+        client_error::{ClientError, ClientErrorKind, Result as ClientResult},
         http_sender::HttpSender,
         mock_sender::{MockSender, Mocks},
-        nonblocking::{self, rpc_client::get_rpc_request_str},
         rpc_config::{RpcAccountInfoConfig, *},
-        rpc_request::{RpcRequest, TokenAccountsFilter},
+        rpc_request::{RpcError, RpcRequest, RpcResponseErrorData, TokenAccountsFilter},
         rpc_response::*,
         rpc_sender::*,
+        spinner,
     },
-    serde_json::Value,
+    bincode::serialize,
+    log::*,
+    serde_json::{json, Value},
     solana_account_decoder::{
-        parse_token::{UiTokenAccount, UiTokenAmount},
-        UiAccount, UiAccountEncoding,
+        parse_token::{TokenAccountType, UiTokenAccount, UiTokenAmount},
+        UiAccount, UiAccountData, UiAccountEncoding,
     },
     solana_sdk::{
         account::Account,
-        clock::{Epoch, Slot, UnixTimestamp},
-        commitment_config::CommitmentConfig,
+        clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT, MAX_HASH_AGE_IN_SECONDS},
+        commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
         epoch_schedule::EpochSchedule,
         fee_calculator::{FeeCalculator, FeeRateGovernor},
         hash::Hash,
-        message::Message,
         pubkey::Pubkey,
         signature::Signature,
-        transaction::{self, Transaction},
+        transaction::{self, uses_durable_nonce, Transaction},
     },
     solana_transaction_status::{
-        EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, TransactionStatus,
-        UiConfirmedBlock, UiTransactionEncoding,
+        EncodedConfirmedBlock, EncodedConfirmedTransaction, TransactionStatus, UiConfirmedBlock,
+        UiTransactionEncoding,
     },
-    std::{net::SocketAddr, str::FromStr, time::Duration},
+    solana_vote_program::vote_state::MAX_LOCKOUT_HISTORY,
+    std::{
+        cmp::min,
+        net::SocketAddr,
+        str::FromStr,
+        sync::RwLock,
+        thread::sleep,
+        time::{Duration, Instant},
+    },
 };
 
 #[derive(Default)]
 pub struct RpcClientConfig {
-    pub commitment_config: CommitmentConfig,
-    pub confirm_transaction_initial_timeout: Option<Duration>,
+    commitment_config: CommitmentConfig,
+    confirm_transaction_initial_timeout: Option<Duration>,
 }
 
 impl RpcClientConfig {
-    pub fn with_commitment(commitment_config: CommitmentConfig) -> Self {
+    fn with_commitment(commitment_config: CommitmentConfig) -> Self {
         RpcClientConfig {
             commitment_config,
             ..Self::default()
         }
     }
-}
-
-#[derive(Debug, Default)]
-pub struct GetConfirmedSignaturesForAddress2Config {
-    pub before: Option<Signature>,
-    pub until: Option<Signature>,
-    pub limit: Option<usize>,
-    pub commitment: Option<CommitmentConfig>,
 }
 
 /// A client of a remote Solana node.
@@ -132,8 +136,8 @@ pub struct GetConfirmedSignaturesForAddress2Config {
 /// # let key = Keypair::new();
 /// # let to = solana_sdk::pubkey::new_rand();
 /// # let lamports = 50;
-/// # let latest_blockhash = Hash::default();
-/// # let tx = system_transaction::transfer(&key, &to, lamports, latest_blockhash);
+/// # let recent_blockhash = Hash::default();
+/// # let tx = system_transaction::transfer(&key, &to, lamports, recent_blockhash);
 /// let signature = rpc_client.send_transaction(&tx)?;
 /// let statuses = rpc_client.get_signature_statuses(&[signature])?.value;
 /// # Ok::<(), ClientError>(())
@@ -146,14 +150,9 @@ pub struct GetConfirmedSignaturesForAddress2Config {
 /// returns `true`. The default timeout is 30 seconds, and may be changed by
 /// calling an appropriate constructor with a `timeout` parameter.
 pub struct RpcClient {
-    rpc_client: nonblocking::rpc_client::RpcClient,
-    runtime: Option<tokio::runtime::Runtime>,
-}
-
-impl Drop for RpcClient {
-    fn drop(&mut self) {
-        self.runtime.take().expect("runtime").shutdown_background();
-    }
+    sender: Box<dyn RpcSender + Send + Sync + 'static>,
+    config: RpcClientConfig,
+    node_version: RwLock<Option<semver::Version>>,
 }
 
 impl RpcClient {
@@ -168,15 +167,9 @@ impl RpcClient {
         config: RpcClientConfig,
     ) -> Self {
         Self {
-            rpc_client: nonblocking::rpc_client::RpcClient::new_sender(sender, config),
-            runtime: Some(
-                tokio::runtime::Builder::new_current_thread()
-                    .thread_name("rpc-client")
-                    .enable_io()
-                    .enable_time()
-                    .build()
-                    .unwrap(),
-            ),
+            sender: Box::new(sender),
+            node_version: RwLock::new(None),
+            config,
         }
     }
 
@@ -461,6 +454,24 @@ impl RpcClient {
         Self::new_with_timeout(url, timeout)
     }
 
+    fn get_node_version(&self) -> Result<semver::Version, RpcError> {
+        let r_node_version = self.node_version.read().unwrap();
+        if let Some(version) = &*r_node_version {
+            Ok(version.clone())
+        } else {
+            drop(r_node_version);
+            let mut w_node_version = self.node_version.write().unwrap();
+            let node_version = self.get_version().map_err(|e| {
+                RpcError::RpcRequestError(format!("cluster version query failed: {}", e))
+            })?;
+            let node_version = semver::Version::parse(&node_version.solana_core).map_err(|e| {
+                RpcError::RpcRequestError(format!("failed to parse cluster version: {}", e))
+            })?;
+            *w_node_version = Some(node_version.clone());
+            Ok(node_version)
+        }
+    }
+
     /// Get the configured default [commitment level][cl].
     ///
     /// [cl]: https://docs.solana.com/developing/clients/jsonrpc-api#configuring-state-commitment
@@ -475,7 +486,44 @@ impl RpcClient {
     /// explicitly provide a [`CommitmentConfig`], like
     /// [`RpcClient::confirm_transaction_with_commitment`].
     pub fn commitment(&self) -> CommitmentConfig {
-        self.rpc_client.commitment()
+        self.config.commitment_config
+    }
+
+    fn use_deprecated_commitment(&self) -> Result<bool, RpcError> {
+        Ok(self.get_node_version()? < semver::Version::new(1, 5, 5))
+    }
+
+    fn maybe_map_commitment(
+        &self,
+        requested_commitment: CommitmentConfig,
+    ) -> Result<CommitmentConfig, RpcError> {
+        if matches!(
+            requested_commitment.commitment,
+            CommitmentLevel::Finalized | CommitmentLevel::Confirmed | CommitmentLevel::Processed
+        ) && self.use_deprecated_commitment()?
+        {
+            return Ok(CommitmentConfig::use_deprecated_commitment(
+                requested_commitment,
+            ));
+        }
+        Ok(requested_commitment)
+    }
+
+    #[allow(deprecated)]
+    fn maybe_map_request(&self, mut request: RpcRequest) -> Result<RpcRequest, RpcError> {
+        if self.get_node_version()? < semver::Version::new(1, 7, 0) {
+            request = match request {
+                RpcRequest::GetBlock => RpcRequest::GetConfirmedBlock,
+                RpcRequest::GetBlocks => RpcRequest::GetConfirmedBlocks,
+                RpcRequest::GetBlocksWithLimit => RpcRequest::GetConfirmedBlocksWithLimit,
+                RpcRequest::GetSignaturesForAddress => {
+                    RpcRequest::GetConfirmedSignaturesForAddress2
+                }
+                RpcRequest::GetTransaction => RpcRequest::GetConfirmedTransaction,
+                _ => request,
+            };
+        }
+        Ok(request)
     }
 
     /// Submit a transaction and wait for confirmation.
@@ -533,8 +581,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_and_confirm_transaction(&tx)?;
     /// # Ok::<(), ClientError>(())
     /// ```
@@ -542,16 +590,64 @@ impl RpcClient {
         &self,
         transaction: &Transaction,
     ) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.send_and_confirm_transaction(transaction))
+        const SEND_RETRIES: usize = 1;
+        const GET_STATUS_RETRIES: usize = usize::MAX;
+
+        'sending: for _ in 0..SEND_RETRIES {
+            let signature = self.send_transaction(transaction)?;
+
+            let recent_blockhash = if uses_durable_nonce(transaction).is_some() {
+                let (recent_blockhash, ..) = self
+                    .get_recent_blockhash_with_commitment(CommitmentConfig::processed())?
+                    .value;
+                recent_blockhash
+            } else {
+                transaction.message.recent_blockhash
+            };
+
+            for status_retry in 0..GET_STATUS_RETRIES {
+                match self.get_signature_status(&signature)? {
+                    Some(Ok(_)) => return Ok(signature),
+                    Some(Err(e)) => return Err(e.into()),
+                    None => {
+                        let fee_calculator = self
+                            .get_fee_calculator_for_blockhash_with_commitment(
+                                &recent_blockhash,
+                                CommitmentConfig::processed(),
+                            )?
+                            .value;
+                        if fee_calculator.is_none() {
+                            // Block hash is not found for some reason
+                            break 'sending;
+                        } else if cfg!(not(test))
+                            // Ignore sleep at last step.
+                            && status_retry < GET_STATUS_RETRIES
+                        {
+                            // Retry twice a second
+                            sleep(Duration::from_millis(500));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(RpcError::ForUser(
+            "unable to confirm transaction. \
+             This can happen in situations such as transaction expiration \
+             and insufficient fee-payer funds"
+                .to_string(),
+        )
+        .into())
     }
 
     pub fn send_and_confirm_transaction_with_spinner(
         &self,
         transaction: &Transaction,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner(transaction),
+        self.send_and_confirm_transaction_with_spinner_and_commitment(
+            transaction,
+            self.commitment(),
         )
     }
 
@@ -560,9 +656,13 @@ impl RpcClient {
         transaction: &Transaction,
         commitment: CommitmentConfig,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_commitment(transaction, commitment),
+        self.send_and_confirm_transaction_with_spinner_and_config(
+            transaction,
+            commitment,
+            RpcSendTransactionConfig {
+                preflight_commitment: Some(commitment.commitment),
+                ..RpcSendTransactionConfig::default()
+            },
         )
     }
 
@@ -572,14 +672,16 @@ impl RpcClient {
         commitment: CommitmentConfig,
         config: RpcSendTransactionConfig,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    transaction,
-                    commitment,
-                    config,
-                ),
-        )
+        let recent_blockhash = if uses_durable_nonce(transaction).is_some() {
+            self.get_recent_blockhash_with_commitment(CommitmentConfig::processed())?
+                .value
+                .0
+        } else {
+            transaction.message.recent_blockhash
+        };
+        let signature = self.send_transaction_with_config(transaction, config)?;
+        self.confirm_transaction_with_spinner(&signature, &recent_blockhash, commitment)?;
+        Ok(signature)
     }
 
     /// Submits a signed transaction to the network.
@@ -646,13 +748,21 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn send_transaction(&self, transaction: &Transaction) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.send_transaction(transaction))
+        self.send_transaction_with_config(
+            transaction,
+            RpcSendTransactionConfig {
+                preflight_commitment: Some(
+                    self.maybe_map_commitment(self.commitment())?.commitment,
+                ),
+                ..RpcSendTransactionConfig::default()
+            },
+        )
     }
 
     /// Submits a signed transaction to the network.
@@ -721,8 +831,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let config = RpcSendTransactionConfig {
     ///     skip_preflight: true,
     ///     .. RpcSendTransactionConfig::default()
@@ -738,17 +848,80 @@ impl RpcClient {
         transaction: &Transaction,
         config: RpcSendTransactionConfig,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .send_transaction_with_config(transaction, config),
-        )
+        let encoding = if let Some(encoding) = config.encoding {
+            encoding
+        } else {
+            self.default_cluster_transaction_encoding()?
+        };
+        let preflight_commitment = CommitmentConfig {
+            commitment: config.preflight_commitment.unwrap_or_default(),
+        };
+        let preflight_commitment = self.maybe_map_commitment(preflight_commitment)?;
+        let config = RpcSendTransactionConfig {
+            encoding: Some(encoding),
+            preflight_commitment: Some(preflight_commitment.commitment),
+            ..config
+        };
+        let serialized_encoded = serialize_encode_transaction(transaction, encoding)?;
+        let signature_base58_str: String = match self.send(
+            RpcRequest::SendTransaction,
+            json!([serialized_encoded, config]),
+        ) {
+            Ok(signature_base58_str) => signature_base58_str,
+            Err(err) => {
+                if let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+                    code,
+                    message,
+                    data,
+                }) = &err.kind
+                {
+                    debug!("{} {}", code, message);
+                    if let RpcResponseErrorData::SendTransactionPreflightFailure(
+                        RpcSimulateTransactionResult {
+                            logs: Some(logs), ..
+                        },
+                    ) = data
+                    {
+                        for (i, log) in logs.iter().enumerate() {
+                            debug!("{:>3}: {}", i + 1, log);
+                        }
+                        debug!("");
+                    }
+                }
+                return Err(err);
+            }
+        };
+
+        let signature = signature_base58_str
+            .parse::<Signature>()
+            .map_err(|err| Into::<ClientError>::into(RpcError::ParseError(err.to_string())))?;
+        // A mismatching RPC response signature indicates an issue with the RPC node, and
+        // should not be passed along to confirmation methods. The transaction may or may
+        // not have been submitted to the cluster, so callers should verify the success of
+        // the correct transaction signature independently.
+        if signature != transaction.signatures[0] {
+            Err(RpcError::RpcRequestError(format!(
+                "RPC node returned mismatched signature {:?}, expected {:?}",
+                signature, transaction.signatures[0]
+            ))
+            .into())
+        } else {
+            Ok(transaction.signatures[0])
+        }
     }
 
     pub fn send<T>(&self, request: RpcRequest, params: Value) -> ClientResult<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        self.invoke(self.rpc_client.send(request, params))
+        assert!(params.is_array() || params.is_null());
+
+        let response = self
+            .sender
+            .send(request, params)
+            .map_err(|err| err.into_with_request(request))?;
+        serde_json::from_value(response)
+            .map_err(|err| ClientError::new_with_request(err.into(), request))
     }
 
     /// Check the confirmation status of a transaction.
@@ -791,8 +964,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     ///
     /// loop {
@@ -804,7 +977,9 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn confirm_transaction(&self, signature: &Signature) -> ClientResult<bool> {
-        self.invoke(self.rpc_client.confirm_transaction(signature))
+        Ok(self
+            .confirm_transaction_with_commitment(signature, self.commitment())?
+            .value)
     }
 
     /// Check the confirmation status of a transaction.
@@ -848,8 +1023,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     ///
     /// loop {
@@ -866,23 +1041,118 @@ impl RpcClient {
         signature: &Signature,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<bool> {
-        self.invoke(
-            self.rpc_client
-                .confirm_transaction_with_commitment(signature, commitment_config),
-        )
+        let Response { context, value } = self.get_signature_statuses(&[*signature])?;
+
+        Ok(Response {
+            context,
+            value: value[0]
+                .as_ref()
+                .filter(|result| result.satisfies_commitment(commitment_config))
+                .map(|result| result.status.is_ok())
+                .unwrap_or_default(),
+        })
     }
 
     pub fn confirm_transaction_with_spinner(
         &self,
         signature: &Signature,
         recent_blockhash: &Hash,
-        commitment_config: CommitmentConfig,
+        commitment: CommitmentConfig,
     ) -> ClientResult<()> {
-        self.invoke(self.rpc_client.confirm_transaction_with_spinner(
-            signature,
-            recent_blockhash,
-            commitment_config,
-        ))
+        let desired_confirmations = if commitment.is_finalized() {
+            MAX_LOCKOUT_HISTORY + 1
+        } else {
+            1
+        };
+        let mut confirmations = 0;
+
+        let progress_bar = spinner::new_progress_bar();
+
+        progress_bar.set_message(&format!(
+            "[{}/{}] Finalizing transaction {}",
+            confirmations, desired_confirmations, signature,
+        ));
+
+        let now = Instant::now();
+        let confirm_transaction_initial_timeout = self
+            .config
+            .confirm_transaction_initial_timeout
+            .unwrap_or_default();
+        let (signature, status) = loop {
+            // Get recent commitment in order to count confirmations for successful transactions
+            let status = self
+                .get_signature_status_with_commitment(signature, CommitmentConfig::processed())?;
+            if status.is_none() {
+                let blockhash_not_found = self
+                    .get_fee_calculator_for_blockhash_with_commitment(
+                        recent_blockhash,
+                        CommitmentConfig::processed(),
+                    )?
+                    .value
+                    .is_none();
+                if blockhash_not_found && now.elapsed() >= confirm_transaction_initial_timeout {
+                    break (signature, status);
+                }
+            } else {
+                break (signature, status);
+            }
+
+            if cfg!(not(test)) {
+                sleep(Duration::from_millis(500));
+            }
+        };
+        if let Some(result) = status {
+            if let Err(err) = result {
+                return Err(err.into());
+            }
+        } else {
+            return Err(RpcError::ForUser(
+                "unable to confirm transaction. \
+                                      This can happen in situations such as transaction expiration \
+                                      and insufficient fee-payer funds"
+                    .to_string(),
+            )
+            .into());
+        }
+        let now = Instant::now();
+        loop {
+            // Return when specified commitment is reached
+            // Failed transactions have already been eliminated, `is_some` check is sufficient
+            if self
+                .get_signature_status_with_commitment(signature, commitment)?
+                .is_some()
+            {
+                progress_bar.set_message("Transaction confirmed");
+                progress_bar.finish_and_clear();
+                return Ok(());
+            }
+
+            progress_bar.set_message(&format!(
+                "[{}/{}] Finalizing transaction {}",
+                min(confirmations + 1, desired_confirmations),
+                desired_confirmations,
+                signature,
+            ));
+            sleep(Duration::from_millis(500));
+            confirmations = self
+                .get_num_blocks_since_signature_confirmation(signature)
+                .unwrap_or(confirmations);
+            if now.elapsed().as_secs() >= MAX_HASH_AGE_IN_SECONDS as u64 {
+                return Err(
+                    RpcError::ForUser("transaction not finalized. \
+                                      This can happen when a transaction lands in an abandoned fork. \
+                                      Please retry.".to_string()).into(),
+                );
+            }
+        }
+    }
+
+    fn default_cluster_transaction_encoding(&self) -> Result<UiTransactionEncoding, RpcError> {
+        if self.get_node_version()? < semver::Version::new(1, 3, 16) {
+            Ok(UiTransactionEncoding::Base58)
+        } else {
+            Ok(UiTransactionEncoding::Base64)
+        }
     }
 
     /// Simulates sending a transaction.
@@ -933,8 +1203,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let result = rpc_client.simulate_transaction(&tx)?;
     /// assert!(result.value.err.is_none());
     /// # Ok::<(), ClientError>(())
@@ -943,7 +1213,13 @@ impl RpcClient {
         &self,
         transaction: &Transaction,
     ) -> RpcResult<RpcSimulateTransactionResult> {
-        self.invoke(self.rpc_client.simulate_transaction(transaction))
+        self.simulate_transaction_with_config(
+            transaction,
+            RpcSimulateTransactionConfig {
+                commitment: Some(self.commitment()),
+                ..RpcSimulateTransactionConfig::default()
+            },
+        )
     }
 
     /// Simulates sending a transaction.
@@ -1003,8 +1279,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let config = RpcSimulateTransactionConfig {
     ///     sig_verify: true,
     ///     .. RpcSimulateTransactionConfig::default()
@@ -1021,22 +1297,32 @@ impl RpcClient {
         transaction: &Transaction,
         config: RpcSimulateTransactionConfig,
     ) -> RpcResult<RpcSimulateTransactionResult> {
-        self.invoke(
-            self.rpc_client
-                .simulate_transaction_with_config(transaction, config),
+        let encoding = if let Some(encoding) = config.encoding {
+            encoding
+        } else {
+            self.default_cluster_transaction_encoding()?
+        };
+        let commitment = config.commitment.unwrap_or_default();
+        let commitment = self.maybe_map_commitment(commitment)?;
+        let config = RpcSimulateTransactionConfig {
+            encoding: Some(encoding),
+            commitment: Some(commitment),
+            ..config
+        };
+        let serialized_encoded = serialize_encode_transaction(transaction, encoding)?;
+        self.send(
+            RpcRequest::SimulateTransaction,
+            json!([serialized_encoded, config]),
         )
     }
 
-    /// Returns the highest slot information that the node has snapshots for.
-    ///
-    /// This will find the highest full snapshot slot, and the highest incremental snapshot slot
-    /// _based on_ the full snapshot slot, if there is one.
+    /// Returns the highest slot that the node has a snapshot for.
     ///
     /// # RPC Reference
     ///
-    /// This method corresponds directly to the [`getHighestSnapshotSlot`] RPC method.
+    /// This method corresponds directly to the [`getSnapshotSlot`] RPC method.
     ///
-    /// [`getHighestSnapshotSlot`]: https://docs.solana.com/developing/clients/jsonrpc-api#gethighestsnapshotslot
+    /// [`getSnapshotSlot`]: https://docs.solana.com/developing/clients/jsonrpc-api#getsnapshotslot
     ///
     /// # Examples
     ///
@@ -1046,20 +1332,11 @@ impl RpcClient {
     /// #     client_error::ClientError,
     /// # };
     /// # let rpc_client = RpcClient::new_mock("succeeds".to_string());
-    /// let snapshot_slot_info = rpc_client.get_highest_snapshot_slot()?;
+    /// let slot = rpc_client.get_snapshot_slot()?;
     /// # Ok::<(), ClientError>(())
     /// ```
-    pub fn get_highest_snapshot_slot(&self) -> ClientResult<RpcSnapshotSlotInfo> {
-        self.invoke(self.rpc_client.get_highest_snapshot_slot())
-    }
-
-    #[deprecated(
-        since = "1.8.0",
-        note = "Please use RpcClient::get_highest_snapshot_slot() instead"
-    )]
-    #[allow(deprecated)]
     pub fn get_snapshot_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_snapshot_slot())
+        self.send(RpcRequest::GetSnapshotSlot, Value::Null)
     }
 
     /// Check if a transaction has been processed with the default [commitment level][cl].
@@ -1110,8 +1387,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     /// let status = rpc_client.get_signature_status(&signature)?;
     /// # Ok::<(), ClientError>(())
@@ -1120,7 +1397,7 @@ impl RpcClient {
         &self,
         signature: &Signature,
     ) -> ClientResult<Option<transaction::Result<()>>> {
-        self.invoke(self.rpc_client.get_signature_status(signature))
+        self.get_signature_status_with_commitment(signature, self.commitment())
     }
 
     /// Gets the statuses of a list of transaction signatures.
@@ -1179,8 +1456,8 @@ impl RpcClient {
     /// // Send lamports from Alice to Bob and wait for the transaction to be processed
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     ///
     /// let status = loop {
@@ -1198,7 +1475,8 @@ impl RpcClient {
         &self,
         signatures: &[Signature],
     ) -> RpcResult<Vec<Option<TransactionStatus>>> {
-        self.invoke(self.rpc_client.get_signature_statuses(signatures))
+        let signatures: Vec<_> = signatures.iter().map(|s| s.to_string()).collect();
+        self.send(RpcRequest::GetSignatureStatuses, json!([signatures]))
     }
 
     /// Gets the statuses of a list of transaction signatures.
@@ -1255,7 +1533,7 @@ impl RpcClient {
     /// # fn get_old_transaction_signature() -> Signature { Signature::default() }
     /// // Check if an old transaction exists
     /// let signature = get_old_transaction_signature();
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
     /// let statuses = rpc_client.get_signature_statuses_with_history(&[signature])?.value;
     /// if statuses[0].is_none() {
     ///     println!("old transaction does not exist");
@@ -1266,9 +1544,12 @@ impl RpcClient {
         &self,
         signatures: &[Signature],
     ) -> RpcResult<Vec<Option<TransactionStatus>>> {
-        self.invoke(
-            self.rpc_client
-                .get_signature_statuses_with_history(signatures),
+        let signatures: Vec<_> = signatures.iter().map(|s| s.to_string()).collect();
+        self.send(
+            RpcRequest::GetSignatureStatuses,
+            json!([signatures, {
+                "searchTransactionHistory": true
+            }]),
         )
     }
 
@@ -1320,8 +1601,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_and_confirm_transaction(&tx)?;
     /// let commitment_config = CommitmentConfig::processed();
     /// let status = rpc_client.get_signature_status_with_commitment(
@@ -1335,10 +1616,14 @@ impl RpcClient {
         signature: &Signature,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Option<transaction::Result<()>>> {
-        self.invoke(
-            self.rpc_client
-                .get_signature_status_with_commitment(signature, commitment_config),
-        )
+        let result: Response<Vec<Option<TransactionStatus>>> = self.send(
+            RpcRequest::GetSignatureStatuses,
+            json!([[signature.to_string()]]),
+        )?;
+        Ok(result.value[0]
+            .clone()
+            .filter(|result| result.satisfies_commitment(commitment_config))
+            .map(|status_meta| status_meta.status))
     }
 
     /// Check if a transaction has been processed with the given [commitment level][cl].
@@ -1385,8 +1670,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_transaction(&tx)?;
     /// let commitment_config = CommitmentConfig::processed();
     /// let search_transaction_history = true;
@@ -1403,14 +1688,16 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
         search_transaction_history: bool,
     ) -> ClientResult<Option<transaction::Result<()>>> {
-        self.invoke(
-            self.rpc_client
-                .get_signature_status_with_commitment_and_history(
-                    signature,
-                    commitment_config,
-                    search_transaction_history,
-                ),
-        )
+        let result: Response<Vec<Option<TransactionStatus>>> = self.send(
+            RpcRequest::GetSignatureStatuses,
+            json!([[signature.to_string()], {
+                "searchTransactionHistory": search_transaction_history
+            }]),
+        )?;
+        Ok(result.value[0]
+            .clone()
+            .filter(|result| result.satisfies_commitment(commitment_config))
+            .map(|status_meta| status_meta.status))
     }
 
     /// Returns the slot that has reached the configured [commitment level][cl].
@@ -1435,7 +1722,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_slot())
+        self.get_slot_with_commitment(self.commitment())
     }
 
     /// Returns the slot that has reached the given [commitment level][cl].
@@ -1465,7 +1752,10 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_slot_with_commitment(commitment_config))
+        self.send(
+            RpcRequest::GetSlot,
+            json!([self.maybe_map_commitment(commitment_config)?]),
+        )
     }
 
     /// Returns the block height that has reached the configured [commitment level][cl].
@@ -1490,7 +1780,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_height(&self) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_block_height())
+        self.get_block_height_with_commitment(self.commitment())
     }
 
     /// Returns the block height that has reached the given [commitment level][cl].
@@ -1522,9 +1812,9 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_block_height_with_commitment(commitment_config),
+        self.send(
+            RpcRequest::GetBlockHeight,
+            json!([self.maybe_map_commitment(commitment_config)?]),
         )
     }
 
@@ -1551,7 +1841,21 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_slot_leaders(&self, start_slot: Slot, limit: u64) -> ClientResult<Vec<Pubkey>> {
-        self.invoke(self.rpc_client.get_slot_leaders(start_slot, limit))
+        self.send(RpcRequest::GetSlotLeaders, json!([start_slot, limit]))
+            .and_then(|slot_leaders: Vec<String>| {
+                slot_leaders
+                    .iter()
+                    .map(|slot_leader| {
+                        Pubkey::from_str(slot_leader).map_err(|err| {
+                            ClientErrorKind::Custom(format!(
+                                "pubkey deserialization failed: {}",
+                                err
+                            ))
+                            .into()
+                        })
+                    })
+                    .collect()
+            })
     }
 
     /// Get block production for the current epoch.
@@ -1574,7 +1878,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_production(&self) -> RpcResult<RpcBlockProduction> {
-        self.invoke(self.rpc_client.get_block_production())
+        self.send(RpcRequest::GetBlockProduction, Value::Null)
     }
 
     /// Get block production for the current or previous epoch.
@@ -1622,7 +1926,7 @@ impl RpcClient {
         &self,
         config: RpcBlockProductionConfig,
     ) -> RpcResult<RpcBlockProduction> {
-        self.invoke(self.rpc_client.get_block_production_with_config(config))
+        self.send(RpcRequest::GetBlockProduction, json!([config]))
     }
 
     /// Returns epoch activation information for a stake account.
@@ -1677,12 +1981,12 @@ impl RpcClient {
     ///     1_000_000,
     /// );
     ///
-    /// let latest_blockhash = rpc_client.get_latest_blockhash()?;
+    /// let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
     /// let tx = Transaction::new_signed_with_payer(
     ///     &instrs,
     ///     Some(&alice.pubkey()),
     ///     &[&alice, &stake_account],
-    ///     latest_blockhash,
+    ///     recent_blockhash,
     /// );
     ///
     /// rpc_client.send_and_confirm_transaction(&tx)?;
@@ -1701,7 +2005,16 @@ impl RpcClient {
         stake_account: Pubkey,
         epoch: Option<Epoch>,
     ) -> ClientResult<RpcStakeActivation> {
-        self.invoke(self.rpc_client.get_stake_activation(stake_account, epoch))
+        self.send(
+            RpcRequest::GetStakeActivation,
+            json!([
+                stake_account.to_string(),
+                RpcEpochConfig {
+                    epoch,
+                    commitment: Some(self.commitment()),
+                }
+            ]),
+        )
     }
 
     /// Returns information about the current supply.
@@ -1728,7 +2041,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn supply(&self) -> RpcResult<RpcSupply> {
-        self.invoke(self.rpc_client.supply())
+        self.supply_with_commitment(self.commitment())
     }
 
     /// Returns information about the current supply.
@@ -1758,7 +2071,10 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<RpcSupply> {
-        self.invoke(self.rpc_client.supply_with_commitment(commitment_config))
+        self.send(
+            RpcRequest::GetSupply,
+            json!([self.maybe_map_commitment(commitment_config)?]),
+        )
     }
 
     /// Returns the 20 largest accounts, by lamport balance.
@@ -1795,7 +2111,13 @@ impl RpcClient {
         &self,
         config: RpcLargestAccountsConfig,
     ) -> RpcResult<Vec<RpcAccountBalance>> {
-        self.invoke(self.rpc_client.get_largest_accounts_with_config(config))
+        let commitment = config.commitment.unwrap_or_default();
+        let commitment = self.maybe_map_commitment(commitment)?;
+        let config = RpcLargestAccountsConfig {
+            commitment: Some(commitment),
+            ..config
+        };
+        self.send(RpcRequest::GetLargestAccounts, json!([config]))
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -1822,7 +2144,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_vote_accounts(&self) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(self.rpc_client.get_vote_accounts())
+        self.get_vote_accounts_with_commitment(self.commitment())
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -1855,10 +2177,10 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(
-            self.rpc_client
-                .get_vote_accounts_with_commitment(commitment_config),
-        )
+        self.get_vote_accounts_with_config(RpcGetVoteAccountsConfig {
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            ..RpcGetVoteAccountsConfig::default()
+        })
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -1904,7 +2226,7 @@ impl RpcClient {
         &self,
         config: RpcGetVoteAccountsConfig,
     ) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(self.rpc_client.get_vote_accounts_with_config(config))
+        self.send(RpcRequest::GetVoteAccounts, json!([config]))
     }
 
     pub fn wait_for_max_stake(
@@ -1912,10 +2234,31 @@ impl RpcClient {
         commitment: CommitmentConfig,
         max_stake_percent: f32,
     ) -> ClientResult<()> {
-        self.invoke(
-            self.rpc_client
-                .wait_for_max_stake(commitment, max_stake_percent),
-        )
+        let mut current_percent;
+        loop {
+            let vote_accounts = self.get_vote_accounts_with_commitment(commitment)?;
+
+            let mut max = 0;
+            let total_active_stake = vote_accounts
+                .current
+                .iter()
+                .chain(vote_accounts.delinquent.iter())
+                .map(|vote_account| {
+                    max = std::cmp::max(max, vote_account.activated_stake);
+                    vote_account.activated_stake
+                })
+                .sum::<u64>();
+            current_percent = 100f32 * max as f32 / total_active_stake as f32;
+            if current_percent < max_stake_percent {
+                break;
+            }
+            info!(
+                "Waiting for stake to drop below {} current: {:.1}",
+                max_stake_percent, current_percent
+            );
+            sleep(Duration::from_secs(10));
+        }
+        Ok(())
     }
 
     /// Returns information about all the nodes participating in the cluster.
@@ -1939,7 +2282,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_cluster_nodes(&self) -> ClientResult<Vec<RpcContactInfo>> {
-        self.invoke(self.rpc_client.get_cluster_nodes())
+        self.send(RpcRequest::GetClusterNodes, Value::Null)
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -1971,7 +2314,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block(&self, slot: Slot) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block(slot))
+        self.get_block_with_encoding(slot, UiTransactionEncoding::Json)
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -2004,7 +2347,10 @@ impl RpcClient {
         slot: Slot,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block_with_encoding(slot, encoding))
+        self.send(
+            self.maybe_map_request(RpcRequest::GetBlock)?,
+            json!([slot, encoding]),
+        )
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -2046,13 +2392,16 @@ impl RpcClient {
         slot: Slot,
         config: RpcBlockConfig,
     ) -> ClientResult<UiConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block_with_config(slot, config))
+        self.send(
+            self.maybe_map_request(RpcRequest::GetBlock)?,
+            json!([slot, config]),
+        )
     }
 
     #[deprecated(since = "1.7.0", note = "Please use RpcClient::get_block() instead")]
     #[allow(deprecated)]
     pub fn get_confirmed_block(&self, slot: Slot) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_confirmed_block(slot))
+        self.get_confirmed_block_with_encoding(slot, UiTransactionEncoding::Json)
     }
 
     #[deprecated(
@@ -2065,10 +2414,7 @@ impl RpcClient {
         slot: Slot,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_block_with_encoding(slot, encoding),
-        )
+        self.send(RpcRequest::GetConfirmedBlock, json!([slot, encoding]))
     }
 
     #[deprecated(
@@ -2081,10 +2427,7 @@ impl RpcClient {
         slot: Slot,
         config: RpcConfirmedBlockConfig,
     ) -> ClientResult<UiConfirmedBlock> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_block_with_config(slot, config),
-        )
+        self.send(RpcRequest::GetConfirmedBlock, json!([slot, config]))
     }
 
     /// Returns a list of finalized blocks between two slots.
@@ -2133,7 +2476,10 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_blocks(&self, start_slot: Slot, end_slot: Option<Slot>) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks(start_slot, end_slot))
+        self.send(
+            self.maybe_map_request(RpcRequest::GetBlocks)?,
+            json!([start_slot, end_slot]),
+        )
     }
 
     /// Returns a list of confirmed blocks between two slots.
@@ -2198,11 +2544,16 @@ impl RpcClient {
         end_slot: Option<Slot>,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_commitment(
-            start_slot,
-            end_slot,
-            commitment_config,
-        ))
+        let json = if end_slot.is_some() {
+            json!([
+                start_slot,
+                end_slot,
+                self.maybe_map_commitment(commitment_config)?
+            ])
+        } else {
+            json!([start_slot, self.maybe_map_commitment(commitment_config)?])
+        };
+        self.send(self.maybe_map_request(RpcRequest::GetBlocks)?, json)
     }
 
     /// Returns a list of finalized blocks starting at the given slot.
@@ -2240,7 +2591,10 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_blocks_with_limit(&self, start_slot: Slot, limit: usize) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_limit(start_slot, limit))
+        self.send(
+            self.maybe_map_request(RpcRequest::GetBlocksWithLimit)?,
+            json!([start_slot, limit]),
+        )
     }
 
     /// Returns a list of confirmed blocks starting at the given slot.
@@ -2290,11 +2644,14 @@ impl RpcClient {
         limit: usize,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_limit_and_commitment(
-            start_slot,
-            limit,
-            commitment_config,
-        ))
+        self.send(
+            self.maybe_map_request(RpcRequest::GetBlocksWithLimit)?,
+            json!([
+                start_slot,
+                limit,
+                self.maybe_map_commitment(commitment_config)?
+            ]),
+        )
     }
 
     #[deprecated(since = "1.7.0", note = "Please use RpcClient::get_blocks() instead")]
@@ -2304,7 +2661,10 @@ impl RpcClient {
         start_slot: Slot,
         end_slot: Option<Slot>,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_confirmed_blocks(start_slot, end_slot))
+        self.send(
+            RpcRequest::GetConfirmedBlocks,
+            json!([start_slot, end_slot]),
+        )
     }
 
     #[deprecated(
@@ -2318,11 +2678,16 @@ impl RpcClient {
         end_slot: Option<Slot>,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_confirmed_blocks_with_commitment(
-            start_slot,
-            end_slot,
-            commitment_config,
-        ))
+        let json = if end_slot.is_some() {
+            json!([
+                start_slot,
+                end_slot,
+                self.maybe_map_commitment(commitment_config)?
+            ])
+        } else {
+            json!([start_slot, self.maybe_map_commitment(commitment_config)?])
+        };
+        self.send(RpcRequest::GetConfirmedBlocks, json)
     }
 
     #[deprecated(
@@ -2335,9 +2700,9 @@ impl RpcClient {
         start_slot: Slot,
         limit: usize,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_blocks_with_limit(start_slot, limit),
+        self.send(
+            RpcRequest::GetConfirmedBlocksWithLimit,
+            json!([start_slot, limit]),
         )
     }
 
@@ -2352,13 +2717,13 @@ impl RpcClient {
         limit: usize,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_blocks_with_limit_and_commitment(
-                    start_slot,
-                    limit,
-                    commitment_config,
-                ),
+        self.send(
+            RpcRequest::GetConfirmedBlocksWithLimit,
+            json!([
+                start_slot,
+                limit,
+                self.maybe_map_commitment(commitment_config)?
+            ]),
         )
     }
 
@@ -2403,7 +2768,10 @@ impl RpcClient {
         &self,
         address: &Pubkey,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(self.rpc_client.get_signatures_for_address(address))
+        self.get_signatures_for_address_with_config(
+            address,
+            GetConfirmedSignaturesForAddress2Config::default(),
+        )
     }
 
     /// Get confirmed signatures for transactions involving an address.
@@ -2443,8 +2811,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// # let signature = rpc_client.send_and_confirm_transaction(&tx)?;
     /// let config = GetConfirmedSignaturesForAddress2Config {
     ///     before: None,
@@ -2463,10 +2831,19 @@ impl RpcClient {
         address: &Pubkey,
         config: GetConfirmedSignaturesForAddress2Config,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(
-            self.rpc_client
-                .get_signatures_for_address_with_config(address, config),
-        )
+        let config = RpcSignaturesForAddressConfig {
+            before: config.before.map(|signature| signature.to_string()),
+            until: config.until.map(|signature| signature.to_string()),
+            limit: config.limit,
+            commitment: config.commitment,
+        };
+
+        let result: Vec<RpcConfirmedTransactionStatusWithSignature> = self.send(
+            self.maybe_map_request(RpcRequest::GetSignaturesForAddress)?,
+            json!([address.to_string(), config]),
+        )?;
+
+        Ok(result)
     }
 
     #[deprecated(
@@ -2478,9 +2855,9 @@ impl RpcClient {
         &self,
         address: &Pubkey,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_signatures_for_address2(address),
+        self.get_confirmed_signatures_for_address2_with_config(
+            address,
+            GetConfirmedSignaturesForAddress2Config::default(),
         )
     }
 
@@ -2494,10 +2871,19 @@ impl RpcClient {
         address: &Pubkey,
         config: GetConfirmedSignaturesForAddress2Config,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_signatures_for_address2_with_config(address, config),
-        )
+        let config = RpcGetConfirmedSignaturesForAddress2Config {
+            before: config.before.map(|signature| signature.to_string()),
+            until: config.until.map(|signature| signature.to_string()),
+            limit: config.limit,
+            commitment: config.commitment,
+        };
+
+        let result: Vec<RpcConfirmedTransactionStatusWithSignature> = self.send(
+            RpcRequest::GetConfirmedSignaturesForAddress2,
+            json!([address.to_string(), config]),
+        )?;
+
+        Ok(result)
     }
 
     /// Returns transaction details for a confirmed transaction.
@@ -2534,8 +2920,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_and_confirm_transaction(&tx)?;
     /// let transaction = rpc_client.get_transaction(
     ///     &signature,
@@ -2547,8 +2933,11 @@ impl RpcClient {
         &self,
         signature: &Signature,
         encoding: UiTransactionEncoding,
-    ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(self.rpc_client.get_transaction(signature, encoding))
+    ) -> ClientResult<EncodedConfirmedTransaction> {
+        self.send(
+            self.maybe_map_request(RpcRequest::GetTransaction)?,
+            json!([signature.to_string(), encoding]),
+        )
     }
 
     /// Returns transaction details for a confirmed transaction.
@@ -2590,8 +2979,8 @@ impl RpcClient {
     /// # let alice = Keypair::new();
     /// # let bob = Keypair::new();
     /// # let lamports = 50;
-    /// # let latest_blockhash = rpc_client.get_latest_blockhash()?;
-    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, latest_blockhash);
+    /// # let (recent_blockhash, _) = rpc_client.get_recent_blockhash()?;
+    /// # let tx = system_transaction::transfer(&alice, &bob.pubkey(), lamports, recent_blockhash);
     /// let signature = rpc_client.send_and_confirm_transaction(&tx)?;
     /// let config = RpcTransactionConfig {
     ///     encoding: Some(UiTransactionEncoding::Json),
@@ -2607,10 +2996,10 @@ impl RpcClient {
         &self,
         signature: &Signature,
         config: RpcTransactionConfig,
-    ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(
-            self.rpc_client
-                .get_transaction_with_config(signature, config),
+    ) -> ClientResult<EncodedConfirmedTransaction> {
+        self.send(
+            self.maybe_map_request(RpcRequest::GetTransaction)?,
+            json!([signature.to_string(), config]),
         )
     }
 
@@ -2623,10 +3012,10 @@ impl RpcClient {
         &self,
         signature: &Signature,
         encoding: UiTransactionEncoding,
-    ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_transaction(signature, encoding),
+    ) -> ClientResult<EncodedConfirmedTransaction> {
+        self.send(
+            RpcRequest::GetConfirmedTransaction,
+            json!([signature.to_string(), encoding]),
         )
     }
 
@@ -2639,10 +3028,10 @@ impl RpcClient {
         &self,
         signature: &Signature,
         config: RpcConfirmedTransactionConfig,
-    ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_transaction_with_config(signature, config),
+    ) -> ClientResult<EncodedConfirmedTransaction> {
+        self.send(
+            RpcRequest::GetConfirmedTransaction,
+            json!([signature.to_string(), config]),
         )
     }
 
@@ -2668,7 +3057,20 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_time(&self, slot: Slot) -> ClientResult<UnixTimestamp> {
-        self.invoke(self.rpc_client.get_block_time(slot))
+        let request = RpcRequest::GetBlockTime;
+        let response = self.sender.send(request, json!([slot]));
+
+        response
+            .map(|result_json| {
+                if result_json.is_null() {
+                    return Err(RpcError::ForUser(format!("Block Not Found: slot={}", slot)).into());
+                }
+                let result = serde_json::from_value(result_json)
+                    .map_err(|err| ClientError::new_with_request(err.into(), request))?;
+                trace!("Response block timestamp {:?} {:?}", slot, result);
+                Ok(result)
+            })
+            .map_err(|err| err.into_with_request(request))?
     }
 
     /// Returns information about the current epoch.
@@ -2695,7 +3097,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_epoch_info(&self) -> ClientResult<EpochInfo> {
-        self.invoke(self.rpc_client.get_epoch_info())
+        self.get_epoch_info_with_commitment(self.commitment())
     }
 
     /// Returns information about the current epoch.
@@ -2725,9 +3127,9 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<EpochInfo> {
-        self.invoke(
-            self.rpc_client
-                .get_epoch_info_with_commitment(commitment_config),
+        self.send(
+            RpcRequest::GetEpochInfo,
+            json!([self.maybe_map_commitment(commitment_config)?]),
         )
     }
 
@@ -2762,7 +3164,7 @@ impl RpcClient {
         &self,
         slot: Option<Slot>,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
-        self.invoke(self.rpc_client.get_leader_schedule(slot))
+        self.get_leader_schedule_with_commitment(slot, self.commitment())
     }
 
     /// Returns the leader schedule for an epoch.
@@ -2795,9 +3197,12 @@ impl RpcClient {
         slot: Option<Slot>,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
-        self.invoke(
-            self.rpc_client
-                .get_leader_schedule_with_commitment(slot, commitment_config),
+        self.get_leader_schedule_with_config(
+            slot,
+            RpcLeaderScheduleConfig {
+                commitment: Some(self.maybe_map_commitment(commitment_config)?),
+                ..RpcLeaderScheduleConfig::default()
+            },
         )
     }
 
@@ -2836,10 +3241,7 @@ impl RpcClient {
         slot: Option<Slot>,
         config: RpcLeaderScheduleConfig,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
-        self.invoke(
-            self.rpc_client
-                .get_leader_schedule_with_config(slot, config),
-        )
+        self.send(RpcRequest::GetLeaderSchedule, json!([slot, config]))
     }
 
     /// Returns epoch schedule information from this cluster's genesis config.
@@ -2862,7 +3264,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_epoch_schedule(&self) -> ClientResult<EpochSchedule> {
-        self.invoke(self.rpc_client.get_epoch_schedule())
+        self.send(RpcRequest::GetEpochSchedule, Value::Null)
     }
 
     /// Returns a list of recent performance samples, in reverse slot order.
@@ -2894,7 +3296,7 @@ impl RpcClient {
         &self,
         limit: Option<usize>,
     ) -> ClientResult<Vec<RpcPerfSample>> {
-        self.invoke(self.rpc_client.get_recent_performance_samples(limit))
+        self.send(RpcRequest::GetRecentPerformanceSamples, json!([limit]))
     }
 
     /// Returns the identity pubkey for the current node.
@@ -2917,7 +3319,14 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_identity(&self) -> ClientResult<Pubkey> {
-        self.invoke(self.rpc_client.get_identity())
+        let rpc_identity: RpcIdentity = self.send(RpcRequest::GetIdentity, Value::Null)?;
+
+        rpc_identity.identity.parse::<Pubkey>().map_err(|_| {
+            ClientError::new_with_request(
+                RpcError::ParseError("Pubkey".to_string()).into(),
+                RpcRequest::GetIdentity,
+            )
+        })
     }
 
     /// Returns the current inflation governor.
@@ -2946,7 +3355,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_inflation_governor(&self) -> ClientResult<RpcInflationGovernor> {
-        self.invoke(self.rpc_client.get_inflation_governor())
+        self.send(RpcRequest::GetInflationGovernor, Value::Null)
     }
 
     /// Returns the specific inflation values for the current epoch.
@@ -2969,7 +3378,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_inflation_rate(&self) -> ClientResult<RpcInflationRate> {
-        self.invoke(self.rpc_client.get_inflation_rate())
+        self.send(RpcRequest::GetInflationRate, Value::Null)
     }
 
     /// Returns the inflation reward for a list of addresses for an epoch.
@@ -3009,7 +3418,20 @@ impl RpcClient {
         addresses: &[Pubkey],
         epoch: Option<Epoch>,
     ) -> ClientResult<Vec<Option<RpcInflationReward>>> {
-        self.invoke(self.rpc_client.get_inflation_reward(addresses, epoch))
+        let addresses: Vec<_> = addresses
+            .iter()
+            .map(|address| address.to_string())
+            .collect();
+        self.send(
+            RpcRequest::GetInflationReward,
+            json!([
+                addresses,
+                RpcEpochConfig {
+                    epoch,
+                    commitment: Some(self.commitment()),
+                }
+            ]),
+        )
     }
 
     /// Returns the current solana version running on the node.
@@ -3036,7 +3458,7 @@ impl RpcClient {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn get_version(&self) -> ClientResult<RpcVersionInfo> {
-        self.invoke(self.rpc_client.get_version())
+        self.send(RpcRequest::GetVersion, Value::Null)
     }
 
     /// Returns the lowest slot that the node has information about in its ledger.
@@ -3063,7 +3485,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn minimum_ledger_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.minimum_ledger_slot())
+        self.send(RpcRequest::MinimumLedgerSlot, Value::Null)
     }
 
     /// Returns all information associated with the account of the provided pubkey.
@@ -3110,7 +3532,9 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_account(&self, pubkey: &Pubkey) -> ClientResult<Account> {
-        self.invoke(self.rpc_client.get_account(pubkey))
+        self.get_account_with_commitment(pubkey, self.commitment())?
+            .value
+            .ok_or_else(|| RpcError::ForUser(format!("AccountNotFound: pubkey={}", pubkey)).into())
     }
 
     /// Returns all information associated with the account of the provided pubkey.
@@ -3157,10 +3581,41 @@ impl RpcClient {
         pubkey: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<Account>> {
-        self.invoke(
-            self.rpc_client
-                .get_account_with_commitment(pubkey, commitment_config),
-        )
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64Zstd),
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            data_slice: None,
+        };
+        let response = self.sender.send(
+            RpcRequest::GetAccountInfo,
+            json!([pubkey.to_string(), config]),
+        );
+
+        response
+            .map(|result_json| {
+                if result_json.is_null() {
+                    return Err(
+                        RpcError::ForUser(format!("AccountNotFound: pubkey={}", pubkey)).into(),
+                    );
+                }
+                let Response {
+                    context,
+                    value: rpc_account,
+                } = serde_json::from_value::<Response<Option<UiAccount>>>(result_json)?;
+                trace!("Response account {:?} {:?}", pubkey, rpc_account);
+                let account = rpc_account.and_then(|rpc_account| rpc_account.decode());
+
+                Ok(Response {
+                    context,
+                    value: account,
+                })
+            })
+            .map_err(|err| {
+                Into::<ClientError>::into(RpcError::ForUser(format!(
+                    "AccountNotFound: pubkey={}: {}",
+                    pubkey, err
+                )))
+            })?
     }
 
     /// Get the max slot seen from retransmit stage.
@@ -3183,7 +3638,7 @@ impl RpcClient {
     /// let slot = rpc_client.get_max_retransmit_slot()?;
     /// # Ok::<(), ClientError>(())
     pub fn get_max_retransmit_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_max_retransmit_slot())
+        self.send(RpcRequest::GetMaxRetransmitSlot, Value::Null)
     }
 
     /// Get the max slot seen from after [shred](https://docs.solana.com/terminology#shred) insert.
@@ -3206,7 +3661,7 @@ impl RpcClient {
     /// let slot = rpc_client.get_max_shred_insert_slot()?;
     /// # Ok::<(), ClientError>(())
     pub fn get_max_shred_insert_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_max_shred_insert_slot())
+        self.send(RpcRequest::GetMaxShredInsertSlot, Value::Null)
     }
 
     /// Returns the account information for a list of pubkeys.
@@ -3240,7 +3695,9 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_multiple_accounts(&self, pubkeys: &[Pubkey]) -> ClientResult<Vec<Option<Account>>> {
-        self.invoke(self.rpc_client.get_multiple_accounts(pubkeys))
+        Ok(self
+            .get_multiple_accounts_with_commitment(pubkeys, self.commitment())?
+            .value)
     }
 
     /// Returns the account information for a list of pubkeys.
@@ -3279,9 +3736,13 @@ impl RpcClient {
         pubkeys: &[Pubkey],
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<Option<Account>>> {
-        self.invoke(
-            self.rpc_client
-                .get_multiple_accounts_with_commitment(pubkeys, commitment_config),
+        self.get_multiple_accounts_with_config(
+            pubkeys,
+            RpcAccountInfoConfig {
+                encoding: Some(UiAccountEncoding::Base64Zstd),
+                commitment: Some(self.maybe_map_commitment(commitment_config)?),
+                data_slice: None,
+            },
         )
     }
 
@@ -3328,10 +3789,24 @@ impl RpcClient {
         pubkeys: &[Pubkey],
         config: RpcAccountInfoConfig,
     ) -> RpcResult<Vec<Option<Account>>> {
-        self.invoke(
-            self.rpc_client
-                .get_multiple_accounts_with_config(pubkeys, config),
-        )
+        let config = RpcAccountInfoConfig {
+            commitment: config.commitment.or_else(|| Some(self.commitment())),
+            ..config
+        };
+        let pubkeys: Vec<_> = pubkeys.iter().map(|pubkey| pubkey.to_string()).collect();
+        let response = self.send(RpcRequest::GetMultipleAccounts, json!([pubkeys, config]))?;
+        let Response {
+            context,
+            value: accounts,
+        } = serde_json::from_value::<Response<Vec<Option<UiAccount>>>>(response)?;
+        let accounts: Vec<Option<Account>> = accounts
+            .into_iter()
+            .map(|rpc_account| rpc_account.and_then(|a| a.decode()))
+            .collect();
+        Ok(Response {
+            context,
+            value: accounts,
+        })
     }
 
     /// Gets the raw data associated with an account.
@@ -3368,7 +3843,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_account_data(&self, pubkey: &Pubkey) -> ClientResult<Vec<u8>> {
-        self.invoke(self.rpc_client.get_account_data(pubkey))
+        Ok(self.get_account(pubkey)?.data)
     }
 
     /// Returns minimum balance required to make an account with specified data length rent exempt.
@@ -3393,10 +3868,20 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_minimum_balance_for_rent_exemption(&self, data_len: usize) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_minimum_balance_for_rent_exemption(data_len),
-        )
+        let request = RpcRequest::GetMinimumBalanceForRentExemption;
+        let minimum_balance_json = self
+            .sender
+            .send(request, json!([data_len]))
+            .map_err(|err| err.into_with_request(request))?;
+
+        let minimum_balance: u64 = serde_json::from_value(minimum_balance_json)
+            .map_err(|err| ClientError::new_with_request(err.into(), request))?;
+        trace!(
+            "Response minimum balance {:?} {:?}",
+            data_len,
+            minimum_balance
+        );
+        Ok(minimum_balance)
     }
 
     /// Request the balance of the provided account pubkey.
@@ -3428,7 +3913,9 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_balance(&self, pubkey: &Pubkey) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_balance(pubkey))
+        Ok(self
+            .get_balance_with_commitment(pubkey, self.commitment())?
+            .value)
     }
 
     /// Request the balance of the provided account pubkey.
@@ -3465,9 +3952,12 @@ impl RpcClient {
         pubkey: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_balance_with_commitment(pubkey, commitment_config),
+        self.send(
+            RpcRequest::GetBalance,
+            json!([
+                pubkey.to_string(),
+                self.maybe_map_commitment(commitment_config)?
+            ]),
         )
     }
 
@@ -3501,7 +3991,16 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_program_accounts(&self, pubkey: &Pubkey) -> ClientResult<Vec<(Pubkey, Account)>> {
-        self.invoke(self.rpc_client.get_program_accounts(pubkey))
+        self.get_program_accounts_with_config(
+            pubkey,
+            RpcProgramAccountsConfig {
+                account_config: RpcAccountInfoConfig {
+                    encoding: Some(UiAccountEncoding::Base64Zstd),
+                    ..RpcAccountInfoConfig::default()
+                },
+                ..RpcProgramAccountsConfig::default()
+            },
+        )
     }
 
     /// Returns all accounts owned by the provided program pubkey.
@@ -3564,123 +4063,228 @@ impl RpcClient {
         pubkey: &Pubkey,
         config: RpcProgramAccountsConfig,
     ) -> ClientResult<Vec<(Pubkey, Account)>> {
-        self.invoke(
-            self.rpc_client
-                .get_program_accounts_with_config(pubkey, config),
-        )
+        let commitment = config
+            .account_config
+            .commitment
+            .unwrap_or_else(|| self.commitment());
+        let commitment = self.maybe_map_commitment(commitment)?;
+        let account_config = RpcAccountInfoConfig {
+            commitment: Some(commitment),
+            ..config.account_config
+        };
+        let config = RpcProgramAccountsConfig {
+            account_config,
+            ..config
+        };
+        let accounts: Vec<RpcKeyedAccount> = self.send(
+            RpcRequest::GetProgramAccounts,
+            json!([pubkey.to_string(), config]),
+        )?;
+        parse_keyed_accounts(accounts, RpcRequest::GetProgramAccounts)
     }
 
     /// Request the transaction count.
     pub fn get_transaction_count(&self) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_transaction_count())
+        self.get_transaction_count_with_commitment(self.commitment())
     }
 
     pub fn get_transaction_count_with_commitment(
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_transaction_count_with_commitment(commitment_config),
+        self.send(
+            RpcRequest::GetTransactionCount,
+            json!([self.maybe_map_commitment(commitment_config)?]),
         )
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please use `get_latest_blockhash` and `get_fee_for_message` instead"
-    )]
-    #[allow(deprecated)]
     pub fn get_fees(&self) -> ClientResult<Fees> {
-        self.invoke(self.rpc_client.get_fees())
+        Ok(self.get_fees_with_commitment(self.commitment())?.value)
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please use `get_latest_blockhash_with_commitment` and `get_fee_for_message` instead"
-    )]
-    #[allow(deprecated)]
     pub fn get_fees_with_commitment(&self, commitment_config: CommitmentConfig) -> RpcResult<Fees> {
-        self.invoke(self.rpc_client.get_fees_with_commitment(commitment_config))
+        let Response {
+            context,
+            value: fees,
+        } = self.send::<Response<RpcFees>>(
+            RpcRequest::GetFees,
+            json!([self.maybe_map_commitment(commitment_config)?]),
+        )?;
+        let blockhash = fees.blockhash.parse().map_err(|_| {
+            ClientError::new_with_request(
+                RpcError::ParseError("Hash".to_string()).into(),
+                RpcRequest::GetFees,
+            )
+        })?;
+        Ok(Response {
+            context,
+            value: Fees {
+                blockhash,
+                fee_calculator: fees.fee_calculator,
+                last_valid_block_height: fees.last_valid_block_height,
+            },
+        })
     }
 
-    #[deprecated(since = "1.9.0", note = "Please use `get_latest_blockhash` instead")]
-    #[allow(deprecated)]
     pub fn get_recent_blockhash(&self) -> ClientResult<(Hash, FeeCalculator)> {
-        self.invoke(self.rpc_client.get_recent_blockhash())
+        let (blockhash, fee_calculator, _last_valid_slot) = self
+            .get_recent_blockhash_with_commitment(self.commitment())?
+            .value;
+        Ok((blockhash, fee_calculator))
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please use `get_latest_blockhash_with_commitment` instead"
-    )]
-    #[allow(deprecated)]
     pub fn get_recent_blockhash_with_commitment(
         &self,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<(Hash, FeeCalculator, Slot)> {
-        self.invoke(
-            self.rpc_client
-                .get_recent_blockhash_with_commitment(commitment_config),
-        )
+        let (context, blockhash, fee_calculator, last_valid_slot) = if let Ok(Response {
+            context,
+            value:
+                RpcFees {
+                    blockhash,
+                    fee_calculator,
+                    last_valid_slot,
+                    ..
+                },
+        }) = self
+            .send::<Response<RpcFees>>(
+                RpcRequest::GetFees,
+                json!([self.maybe_map_commitment(commitment_config)?]),
+            ) {
+            (context, blockhash, fee_calculator, last_valid_slot)
+        } else if let Ok(Response {
+            context,
+            value:
+                DeprecatedRpcFees {
+                    blockhash,
+                    fee_calculator,
+                    last_valid_slot,
+                },
+        }) = self.send::<Response<DeprecatedRpcFees>>(
+            RpcRequest::GetFees,
+            json!([self.maybe_map_commitment(commitment_config)?]),
+        ) {
+            (context, blockhash, fee_calculator, last_valid_slot)
+        } else if let Ok(Response {
+            context,
+            value:
+                RpcBlockhashFeeCalculator {
+                    blockhash,
+                    fee_calculator,
+                },
+        }) = self.send::<Response<RpcBlockhashFeeCalculator>>(
+            RpcRequest::GetRecentBlockhash,
+            json!([self.maybe_map_commitment(commitment_config)?]),
+        ) {
+            (context, blockhash, fee_calculator, 0)
+        } else {
+            return Err(ClientError::new_with_request(
+                RpcError::ParseError("RpcBlockhashFeeCalculator or RpcFees".to_string()).into(),
+                RpcRequest::GetRecentBlockhash,
+            ));
+        };
+
+        let blockhash = blockhash.parse().map_err(|_| {
+            ClientError::new_with_request(
+                RpcError::ParseError("Hash".to_string()).into(),
+                RpcRequest::GetRecentBlockhash,
+            )
+        })?;
+        Ok(Response {
+            context,
+            value: (blockhash, fee_calculator, last_valid_slot),
+        })
     }
 
-    #[deprecated(since = "1.9.0", note = "Please `get_fee_for_message` instead")]
-    #[allow(deprecated)]
     pub fn get_fee_calculator_for_blockhash(
         &self,
         blockhash: &Hash,
     ) -> ClientResult<Option<FeeCalculator>> {
-        self.invoke(self.rpc_client.get_fee_calculator_for_blockhash(blockhash))
+        Ok(self
+            .get_fee_calculator_for_blockhash_with_commitment(blockhash, self.commitment())?
+            .value)
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please `get_latest_blockhash_with_commitment` and `get_fee_for_message` instead"
-    )]
-    #[allow(deprecated)]
     pub fn get_fee_calculator_for_blockhash_with_commitment(
         &self,
         blockhash: &Hash,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<FeeCalculator>> {
-        self.invoke(
-            self.rpc_client
-                .get_fee_calculator_for_blockhash_with_commitment(blockhash, commitment_config),
-        )
+        let Response { context, value } = self.send::<Response<Option<RpcFeeCalculator>>>(
+            RpcRequest::GetFeeCalculatorForBlockhash,
+            json!([
+                blockhash.to_string(),
+                self.maybe_map_commitment(commitment_config)?
+            ]),
+        )?;
+
+        Ok(Response {
+            context,
+            value: value.map(|rf| rf.fee_calculator),
+        })
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please do not use, will no longer be available in the future"
-    )]
-    #[allow(deprecated)]
     pub fn get_fee_rate_governor(&self) -> RpcResult<FeeRateGovernor> {
-        self.invoke(self.rpc_client.get_fee_rate_governor())
+        let Response {
+            context,
+            value: RpcFeeRateGovernor { fee_rate_governor },
+        } =
+            self.send::<Response<RpcFeeRateGovernor>>(RpcRequest::GetFeeRateGovernor, Value::Null)?;
+
+        Ok(Response {
+            context,
+            value: fee_rate_governor,
+        })
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please do not use, will no longer be available in the future"
-    )]
-    #[allow(deprecated)]
     pub fn get_new_blockhash(&self, blockhash: &Hash) -> ClientResult<(Hash, FeeCalculator)> {
-        self.invoke(self.rpc_client.get_new_blockhash(blockhash))
+        let mut num_retries = 0;
+        let start = Instant::now();
+        while start.elapsed().as_secs() < 5 {
+            if let Ok((new_blockhash, fee_calculator)) = self.get_recent_blockhash() {
+                if new_blockhash != *blockhash {
+                    return Ok((new_blockhash, fee_calculator));
+                }
+            }
+            debug!("Got same blockhash ({:?}), will retry...", blockhash);
+
+            // Retry ~twice during a slot
+            sleep(Duration::from_millis(DEFAULT_MS_PER_SLOT / 2));
+            num_retries += 1;
+        }
+        Err(RpcError::ForUser(format!(
+            "Unable to get new blockhash after {}ms (retried {} times), stuck at {}",
+            start.elapsed().as_millis(),
+            num_retries,
+            blockhash
+        ))
+        .into())
     }
 
     pub fn get_first_available_block(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_first_available_block())
+        self.send(RpcRequest::GetFirstAvailableBlock, Value::Null)
     }
 
     pub fn get_genesis_hash(&self) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_genesis_hash())
+        let hash_str: String = self.send(RpcRequest::GetGenesisHash, Value::Null)?;
+        let hash = hash_str.parse().map_err(|_| {
+            ClientError::new_with_request(
+                RpcError::ParseError("Hash".to_string()).into(),
+                RpcRequest::GetGenesisHash,
+            )
+        })?;
+        Ok(hash)
     }
 
     pub fn get_health(&self) -> ClientResult<()> {
-        self.invoke(self.rpc_client.get_health())
+        self.send::<String>(RpcRequest::GetHealth, Value::Null)
+            .map(|_| ())
     }
 
     pub fn get_token_account(&self, pubkey: &Pubkey) -> ClientResult<Option<UiTokenAccount>> {
-        self.invoke(self.rpc_client.get_token_account(pubkey))
+        Ok(self
+            .get_token_account_with_commitment(pubkey, self.commitment())?
+            .value)
     }
 
     pub fn get_token_account_with_commitment(
@@ -3688,14 +4292,60 @@ impl RpcClient {
         pubkey: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<UiTokenAccount>> {
-        self.invoke(
-            self.rpc_client
-                .get_token_account_with_commitment(pubkey, commitment_config),
-        )
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::JsonParsed),
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            data_slice: None,
+        };
+        let response = self.sender.send(
+            RpcRequest::GetAccountInfo,
+            json!([pubkey.to_string(), config]),
+        );
+
+        response
+            .map(|result_json| {
+                if result_json.is_null() {
+                    return Err(
+                        RpcError::ForUser(format!("AccountNotFound: pubkey={}", pubkey)).into(),
+                    );
+                }
+                let Response {
+                    context,
+                    value: rpc_account,
+                } = serde_json::from_value::<Response<Option<UiAccount>>>(result_json)?;
+                trace!("Response account {:?} {:?}", pubkey, rpc_account);
+                let response = {
+                    if let Some(rpc_account) = rpc_account {
+                        if let UiAccountData::Json(account_data) = rpc_account.data {
+                            let token_account_type: TokenAccountType =
+                                serde_json::from_value(account_data.parsed)?;
+                            if let TokenAccountType::Account(token_account) = token_account_type {
+                                return Ok(Response {
+                                    context,
+                                    value: Some(token_account),
+                                });
+                            }
+                        }
+                    }
+                    Err(Into::<ClientError>::into(RpcError::ForUser(format!(
+                        "Account could not be parsed as token account: pubkey={}",
+                        pubkey
+                    ))))
+                };
+                response?
+            })
+            .map_err(|err| {
+                Into::<ClientError>::into(RpcError::ForUser(format!(
+                    "AccountNotFound: pubkey={}: {}",
+                    pubkey, err
+                )))
+            })?
     }
 
     pub fn get_token_account_balance(&self, pubkey: &Pubkey) -> ClientResult<UiTokenAmount> {
-        self.invoke(self.rpc_client.get_token_account_balance(pubkey))
+        Ok(self
+            .get_token_account_balance_with_commitment(pubkey, self.commitment())?
+            .value)
     }
 
     pub fn get_token_account_balance_with_commitment(
@@ -3703,9 +4353,12 @@ impl RpcClient {
         pubkey: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<UiTokenAmount> {
-        self.invoke(
-            self.rpc_client
-                .get_token_account_balance_with_commitment(pubkey, commitment_config),
+        self.send(
+            RpcRequest::GetTokenAccountBalance,
+            json!([
+                pubkey.to_string(),
+                self.maybe_map_commitment(commitment_config)?
+            ]),
         )
     }
 
@@ -3714,10 +4367,13 @@ impl RpcClient {
         delegate: &Pubkey,
         token_account_filter: TokenAccountsFilter,
     ) -> ClientResult<Vec<RpcKeyedAccount>> {
-        self.invoke(
-            self.rpc_client
-                .get_token_accounts_by_delegate(delegate, token_account_filter),
-        )
+        Ok(self
+            .get_token_accounts_by_delegate_with_commitment(
+                delegate,
+                token_account_filter,
+                self.commitment(),
+            )?
+            .value)
     }
 
     pub fn get_token_accounts_by_delegate_with_commitment(
@@ -3726,13 +4382,22 @@ impl RpcClient {
         token_account_filter: TokenAccountsFilter,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<RpcKeyedAccount>> {
-        self.invoke(
-            self.rpc_client
-                .get_token_accounts_by_delegate_with_commitment(
-                    delegate,
-                    token_account_filter,
-                    commitment_config,
-                ),
+        let token_account_filter = match token_account_filter {
+            TokenAccountsFilter::Mint(mint) => RpcTokenAccountsFilter::Mint(mint.to_string()),
+            TokenAccountsFilter::ProgramId(program_id) => {
+                RpcTokenAccountsFilter::ProgramId(program_id.to_string())
+            }
+        };
+
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::JsonParsed),
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            data_slice: None,
+        };
+
+        self.send(
+            RpcRequest::GetTokenAccountsByOwner,
+            json!([delegate.to_string(), token_account_filter, config]),
         )
     }
 
@@ -3741,10 +4406,13 @@ impl RpcClient {
         owner: &Pubkey,
         token_account_filter: TokenAccountsFilter,
     ) -> ClientResult<Vec<RpcKeyedAccount>> {
-        self.invoke(
-            self.rpc_client
-                .get_token_accounts_by_owner(owner, token_account_filter),
-        )
+        Ok(self
+            .get_token_accounts_by_owner_with_commitment(
+                owner,
+                token_account_filter,
+                self.commitment(),
+            )?
+            .value)
     }
 
     pub fn get_token_accounts_by_owner_with_commitment(
@@ -3753,15 +4421,29 @@ impl RpcClient {
         token_account_filter: TokenAccountsFilter,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<RpcKeyedAccount>> {
-        self.invoke(self.rpc_client.get_token_accounts_by_owner_with_commitment(
-            owner,
-            token_account_filter,
-            commitment_config,
-        ))
+        let token_account_filter = match token_account_filter {
+            TokenAccountsFilter::Mint(mint) => RpcTokenAccountsFilter::Mint(mint.to_string()),
+            TokenAccountsFilter::ProgramId(program_id) => {
+                RpcTokenAccountsFilter::ProgramId(program_id.to_string())
+            }
+        };
+
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::JsonParsed),
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            data_slice: None,
+        };
+
+        self.send(
+            RpcRequest::GetTokenAccountsByOwner,
+            json!([owner.to_string(), token_account_filter, config]),
+        )
     }
 
     pub fn get_token_supply(&self, mint: &Pubkey) -> ClientResult<UiTokenAmount> {
-        self.invoke(self.rpc_client.get_token_supply(mint))
+        Ok(self
+            .get_token_supply_with_commitment(mint, self.commitment())?
+            .value)
     }
 
     pub fn get_token_supply_with_commitment(
@@ -3769,14 +4451,24 @@ impl RpcClient {
         mint: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<UiTokenAmount> {
-        self.invoke(
-            self.rpc_client
-                .get_token_supply_with_commitment(mint, commitment_config),
+        self.send(
+            RpcRequest::GetTokenSupply,
+            json!([
+                mint.to_string(),
+                self.maybe_map_commitment(commitment_config)?
+            ]),
         )
     }
 
     pub fn request_airdrop(&self, pubkey: &Pubkey, lamports: u64) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.request_airdrop(pubkey, lamports))
+        self.request_airdrop_with_config(
+            pubkey,
+            lamports,
+            RpcRequestAirdropConfig {
+                commitment: Some(self.commitment()),
+                ..RpcRequestAirdropConfig::default()
+            },
+        )
     }
 
     pub fn request_airdrop_with_blockhash(
@@ -3785,11 +4477,14 @@ impl RpcClient {
         lamports: u64,
         recent_blockhash: &Hash,
     ) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.request_airdrop_with_blockhash(
+        self.request_airdrop_with_config(
             pubkey,
             lamports,
-            recent_blockhash,
-        ))
+            RpcRequestAirdropConfig {
+                commitment: Some(self.commitment()),
+                recent_blockhash: Some(recent_blockhash.to_string()),
+            },
+        )
     }
 
     pub fn request_airdrop_with_config(
@@ -3798,10 +4493,52 @@ impl RpcClient {
         lamports: u64,
         config: RpcRequestAirdropConfig,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .request_airdrop_with_config(pubkey, lamports, config),
+        let commitment = config.commitment.unwrap_or_default();
+        let commitment = self.maybe_map_commitment(commitment)?;
+        let config = RpcRequestAirdropConfig {
+            commitment: Some(commitment),
+            ..config
+        };
+        self.send(
+            RpcRequest::RequestAirdrop,
+            json!([pubkey.to_string(), lamports, config]),
         )
+        .and_then(|signature: String| {
+            Signature::from_str(&signature).map_err(|err| {
+                ClientErrorKind::Custom(format!("signature deserialization failed: {}", err)).into()
+            })
+        })
+        .map_err(|_| {
+            RpcError::ForUser(
+                "airdrop request failed. \
+                This can happen when the rate limit is reached."
+                    .to_string(),
+            )
+            .into()
+        })
+    }
+
+    fn poll_balance_with_timeout_and_commitment(
+        &self,
+        pubkey: &Pubkey,
+        polling_frequency: &Duration,
+        timeout: &Duration,
+        commitment_config: CommitmentConfig,
+    ) -> ClientResult<u64> {
+        let now = Instant::now();
+        loop {
+            match self.get_balance_with_commitment(pubkey, commitment_config) {
+                Ok(bal) => {
+                    return Ok(bal.value);
+                }
+                Err(e) => {
+                    sleep(*polling_frequency);
+                    if now.elapsed() > *timeout {
+                        return Err(e);
+                    }
+                }
+            };
+        }
     }
 
     pub fn poll_get_balance_with_commitment(
@@ -3809,9 +4546,11 @@ impl RpcClient {
         pubkey: &Pubkey,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .poll_get_balance_with_commitment(pubkey, commitment_config),
+        self.poll_balance_with_timeout_and_commitment(
+            pubkey,
+            &Duration::from_millis(100),
+            &Duration::from_secs(1),
+            commitment_config,
         )
     }
 
@@ -3821,17 +4560,31 @@ impl RpcClient {
         expected_balance: Option<u64>,
         commitment_config: CommitmentConfig,
     ) -> Option<u64> {
-        self.invoke(self.rpc_client.wait_for_balance_with_commitment(
-            pubkey,
-            expected_balance,
-            commitment_config,
-        ))
-        .ok()
+        const LAST: usize = 30;
+        for run in 0..LAST {
+            let balance_result = self.poll_get_balance_with_commitment(pubkey, commitment_config);
+            if expected_balance.is_none() {
+                return balance_result.ok();
+            }
+            trace!(
+                "wait_for_balance_with_commitment [{}] {:?} {:?}",
+                run,
+                balance_result,
+                expected_balance
+            );
+            if let (Some(expected_balance), Ok(balance_result)) = (expected_balance, balance_result)
+            {
+                if expected_balance == balance_result {
+                    return Some(balance_result);
+                }
+            }
+        }
+        None
     }
 
     /// Poll the server to confirm a transaction.
     pub fn poll_for_signature(&self, signature: &Signature) -> ClientResult<()> {
-        self.invoke(self.rpc_client.poll_for_signature(signature))
+        self.poll_for_signature_with_commitment(signature, self.commitment())
     }
 
     /// Poll the server to confirm a transaction.
@@ -3840,10 +4593,23 @@ impl RpcClient {
         signature: &Signature,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<()> {
-        self.invoke(
-            self.rpc_client
-                .poll_for_signature_with_commitment(signature, commitment_config),
-        )
+        let now = Instant::now();
+        loop {
+            if let Ok(Some(_)) =
+                self.get_signature_status_with_commitment(signature, commitment_config)
+            {
+                break;
+            }
+            if now.elapsed().as_secs() > 15 {
+                return Err(RpcError::ForUser(format!(
+                    "signature not found after {} seconds",
+                    now.elapsed().as_secs()
+                ))
+                .into());
+            }
+            sleep(Duration::from_millis(250));
+        }
+        Ok(())
     }
 
     /// Poll the server to confirm a transaction.
@@ -3852,65 +4618,140 @@ impl RpcClient {
         signature: &Signature,
         min_confirmed_blocks: usize,
     ) -> ClientResult<usize> {
-        self.invoke(
-            self.rpc_client
-                .poll_for_signature_confirmation(signature, min_confirmed_blocks),
-        )
+        let mut now = Instant::now();
+        let mut confirmed_blocks = 0;
+        loop {
+            let response = self.get_num_blocks_since_signature_confirmation(signature);
+            match response {
+                Ok(count) => {
+                    if confirmed_blocks != count {
+                        info!(
+                            "signature {} confirmed {} out of {} after {} ms",
+                            signature,
+                            count,
+                            min_confirmed_blocks,
+                            now.elapsed().as_millis()
+                        );
+                        now = Instant::now();
+                        confirmed_blocks = count;
+                    }
+                    if count >= min_confirmed_blocks {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    debug!("check_confirmations request failed: {:?}", err);
+                }
+            };
+            if now.elapsed().as_secs() > 20 {
+                info!(
+                    "signature {} confirmed {} out of {} failed after {} ms",
+                    signature,
+                    confirmed_blocks,
+                    min_confirmed_blocks,
+                    now.elapsed().as_millis()
+                );
+                if confirmed_blocks > 0 {
+                    return Ok(confirmed_blocks);
+                } else {
+                    return Err(RpcError::ForUser(format!(
+                        "signature not found after {} seconds",
+                        now.elapsed().as_secs()
+                    ))
+                    .into());
+                }
+            }
+            sleep(Duration::from_millis(250));
+        }
+        Ok(confirmed_blocks)
     }
 
     pub fn get_num_blocks_since_signature_confirmation(
         &self,
         signature: &Signature,
     ) -> ClientResult<usize> {
-        self.invoke(
-            self.rpc_client
-                .get_num_blocks_since_signature_confirmation(signature),
-        )
-    }
+        let result: Response<Vec<Option<TransactionStatus>>> = self.send(
+            RpcRequest::GetSignatureStatuses,
+            json!([[signature.to_string()]]),
+        )?;
 
-    pub fn get_latest_blockhash(&self) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_latest_blockhash())
-    }
-
-    #[allow(deprecated)]
-    pub fn get_latest_blockhash_with_commitment(
-        &self,
-        commitment: CommitmentConfig,
-    ) -> ClientResult<(Hash, u64)> {
-        self.invoke(
-            self.rpc_client
-                .get_latest_blockhash_with_commitment(commitment),
-        )
-    }
-
-    #[allow(deprecated)]
-    pub fn is_blockhash_valid(
-        &self,
-        blockhash: &Hash,
-        commitment: CommitmentConfig,
-    ) -> ClientResult<bool> {
-        self.invoke(self.rpc_client.is_blockhash_valid(blockhash, commitment))
-    }
-
-    #[allow(deprecated)]
-    pub fn get_fee_for_message(&self, message: &Message) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_fee_for_message(message))
-    }
-
-    pub fn get_new_latest_blockhash(&self, blockhash: &Hash) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_new_latest_blockhash(blockhash))
+        let confirmations = result.value[0]
+            .clone()
+            .ok_or_else(|| {
+                ClientError::new_with_request(
+                    ClientErrorKind::Custom("signature not found".to_string()),
+                    RpcRequest::GetSignatureStatuses,
+                )
+            })?
+            .confirmations
+            .unwrap_or(MAX_LOCKOUT_HISTORY + 1);
+        Ok(confirmations)
     }
 
     pub fn get_transport_stats(&self) -> RpcTransportStats {
-        self.rpc_client.get_transport_stats()
+        self.sender.get_transport_stats()
     }
+}
 
-    fn invoke<T, F: std::future::Future<Output = ClientResult<T>>>(&self, f: F) -> ClientResult<T> {
-        // `block_on()` panics if called within an asynchronous execution context. Whereas
-        // `block_in_place()` only panics if called from a current_thread runtime, which is the
-        // lesser evil.
-        tokio::task::block_in_place(move || self.runtime.as_ref().expect("runtime").block_on(f))
+fn serialize_encode_transaction(
+    transaction: &Transaction,
+    encoding: UiTransactionEncoding,
+) -> ClientResult<String> {
+    let serialized = serialize(transaction)
+        .map_err(|e| ClientErrorKind::Custom(format!("transaction serialization failed: {}", e)))?;
+    let encoded = match encoding {
+        UiTransactionEncoding::Base58 => bs58::encode(serialized).into_string(),
+        UiTransactionEncoding::Base64 => base64::encode(serialized),
+        _ => {
+            return Err(ClientErrorKind::Custom(format!(
+                "unsupported transaction encoding: {}. Supported encodings: base58, base64",
+                encoding
+            ))
+            .into())
+        }
+    };
+    Ok(encoded)
+}
+
+#[derive(Debug, Default)]
+pub struct GetConfirmedSignaturesForAddress2Config {
+    pub before: Option<Signature>,
+    pub until: Option<Signature>,
+    pub limit: Option<usize>,
+    pub commitment: Option<CommitmentConfig>,
+}
+
+fn get_rpc_request_str(rpc_addr: SocketAddr, tls: bool) -> String {
+    if tls {
+        format!("https://{}", rpc_addr)
+    } else {
+        format!("http://{}", rpc_addr)
     }
+}
+
+fn parse_keyed_accounts(
+    accounts: Vec<RpcKeyedAccount>,
+    request: RpcRequest,
+) -> ClientResult<Vec<(Pubkey, Account)>> {
+    let mut pubkey_accounts: Vec<(Pubkey, Account)> = Vec::with_capacity(accounts.len());
+    for RpcKeyedAccount { pubkey, account } in accounts.into_iter() {
+        let pubkey = pubkey.parse().map_err(|_| {
+            ClientError::new_with_request(
+                RpcError::ParseError("Pubkey".to_string()).into(),
+                request,
+            )
+        })?;
+        pubkey_accounts.push((
+            pubkey,
+            account.decode().ok_or_else(|| {
+                ClientError::new_with_request(
+                    RpcError::ParseError("Account from rpc".to_string()).into(),
+                    request,
+                )
+            })?,
+        ));
+    }
+    Ok(pubkey_accounts)
 }
 
 /// Mocks for documentation examples
@@ -3946,17 +4787,16 @@ mod tests {
         super::*,
         crate::{client_error::ClientErrorKind, mock_sender::PUBKEY},
         assert_matches::assert_matches,
-        crossbeam_channel::unbounded,
         jsonrpc_core::{futures::prelude::*, Error, IoHandler, Params},
         jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder},
-        serde_json::{json, Number},
+        serde_json::Number,
         solana_sdk::{
             instruction::InstructionError,
             signature::{Keypair, Signer},
             system_transaction,
             transaction::TransactionError,
         },
-        std::{io, thread},
+        std::{io, sync::mpsc::channel, thread},
     };
 
     #[test]
@@ -3966,7 +4806,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[should_panic(expected = "can call blocking only when running on the multi-threaded runtime")]
-    async fn test_send_async_current_thread() {
+    async fn test_send_async_current_thread_should_panic() {
         _test_send();
     }
 
@@ -3976,7 +4816,7 @@ mod tests {
     }
 
     fn _test_send() {
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = channel();
         thread::spawn(move || {
             let rpc_addr = "0.0.0.0:0".parse().unwrap();
             let mut io = IoHandler::default();
@@ -4017,14 +4857,12 @@ mod tests {
             .unwrap();
         assert_eq!(balance, 50);
 
-        #[allow(deprecated)]
         let blockhash: String = rpc_client
             .send(RpcRequest::GetRecentBlockhash, Value::Null)
             .unwrap();
         assert_eq!(blockhash, "deadbeefXjn8o3yroDHxUtKsZZgoy4GPkPPXfouKNHhx");
 
         // Send erroneous parameter
-        #[allow(deprecated)]
         let blockhash: ClientResult<String> =
             rpc_client.send(RpcRequest::GetRecentBlockhash, json!(["parameter"]));
         assert!(blockhash.is_err());
@@ -4059,14 +4897,12 @@ mod tests {
 
         let expected_blockhash: Hash = PUBKEY.parse().unwrap();
 
-        let blockhash = rpc_client.get_latest_blockhash().expect("blockhash ok");
+        let (blockhash, _fee_calculator) = rpc_client.get_recent_blockhash().expect("blockhash ok");
         assert_eq!(blockhash, expected_blockhash);
 
         let rpc_client = RpcClient::new_mock("fails".to_string());
 
-        #[allow(deprecated)]
-        let result = rpc_client.get_recent_blockhash();
-        assert!(result.is_err());
+        assert!(rpc_client.get_recent_blockhash().is_err());
     }
 
     #[test]
@@ -4155,21 +4991,5 @@ mod tests {
         assert!(!prod.by_identity.is_empty());
 
         Ok(())
-    }
-
-    #[test]
-    fn test_get_latest_blockhash() {
-        let rpc_client = RpcClient::new_mock("succeeds".to_string());
-
-        let expected_blockhash: Hash = PUBKEY.parse().unwrap();
-
-        let blockhash = rpc_client.get_latest_blockhash().expect("blockhash ok");
-        assert_eq!(blockhash, expected_blockhash);
-
-        let rpc_client = RpcClient::new_mock("fails".to_string());
-
-        #[allow(deprecated)]
-        let is_err = rpc_client.get_latest_blockhash().is_err();
-        assert!(is_err);
     }
 }

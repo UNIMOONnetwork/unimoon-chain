@@ -2,7 +2,9 @@
 members = [
     "accountsdb-plugin-interface",
     "accountsdb-plugin-manager",
+    "accountsdb-plugin-postgres",
     "accounts-cluster-bench",
+    "bench-exchange",
     "bench-streamer",
     "bench-tps",
     "accounts-bench",
@@ -10,7 +12,6 @@ members = [
     "banks-client",
     "banks-interface",
     "banks-server",
-    "bucket_map",
     "bloom",
     "clap-utils",
     "cli-config",
@@ -19,7 +20,6 @@ members = [
     "core",
     "dos",
     "download-utils",
-    "entry",
     "faucet",
     "frozen-abi",
     "perf",
@@ -46,16 +46,14 @@ members = [
     "poh",
     "poh-bench",
     "program-test",
-    "programs/address-lookup-table",
-    "programs/address-lookup-table-tests",
-    "programs/ed25519-tests",
     "programs/bpf_loader",
-    "programs/bpf_loader/gen-syscall-list",
     "programs/compute-budget",
     "programs/config",
+    "programs/exchange",
+    "programs/ed25519",
+    "programs/secp256k1",
     "programs/stake",
     "programs/vote",
-    "rbpf-cli",
     "remote-wallet",
     "rpc",
     "runtime",
@@ -63,11 +61,10 @@ members = [
     "sdk",
     "sdk/cargo-build-bpf",
     "sdk/cargo-test-bpf",
-    "send-transaction-service",
+    "scripts",
     "stake-accounts",
     "sys-tuner",
     "tokens",
-    "transaction-dos",
     "transaction-status",
     "account-decoder",
     "upload-perf",
@@ -76,15 +73,16 @@ members = [
     "cli",
     "rayon-threadlimit",
     "watchtower",
-    "replica-node",
-    "replica-lib",
-    "test-validator",
-    "rpc-test",
-    "client-test",
-    "zk-token-sdk",
-    "programs/zk-token-proof",
 ]
 
 exclude = [
     "programs/bpf",
 ]
+
+# TODO: Remove once the "simd-accel" feature from the reed-solomon-erasure
+# dependency is supported on Apple M1. v2 of the feature resolver is needed to
+# specify arch-specific features.
+resolver = "2"
+
+[profile.dev]
+split-debuginfo = "unpacked"

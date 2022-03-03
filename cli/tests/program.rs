@@ -1,4 +1,3 @@
-#![allow(clippy::integer_arithmetic)]
 use {
     serde_json::Value,
     solana_cli::{
@@ -7,6 +6,7 @@ use {
     },
     solana_cli_output::OutputFormat,
     solana_client::rpc_client::RpcClient,
+    solana_core::test_validator::TestValidator,
     solana_faucet::faucet::run_local_faucet,
     solana_sdk::{
         account_utils::StateMut,
@@ -17,7 +17,6 @@ use {
         signature::{Keypair, Signer},
     },
     solana_streamer::socket::SocketAddrSpace,
-    solana_test_validator::TestValidator,
     std::{env, fs::File, io::Read, path::PathBuf, str::FromStr},
 };
 
@@ -78,7 +77,7 @@ fn test_cli_program_deploy_non_upgradeable() {
     assert_eq!(account0.lamports, minimum_balance_for_rent_exemption);
     assert_eq!(account0.owner, bpf_loader::id());
     assert!(account0.executable);
-    let mut file = File::open(noop_path.to_str().unwrap()).unwrap();
+    let mut file = File::open(noop_path.to_str().unwrap().to_string()).unwrap();
     let mut elf = Vec::new();
     file.read_to_end(&mut elf).unwrap();
     assert_eq!(account0.data, elf);

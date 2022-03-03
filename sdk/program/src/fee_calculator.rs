@@ -4,12 +4,20 @@ use {
     log::*,
 };
 
-#[derive(Serialize, Deserialize, Default, PartialEq, Eq, Clone, Debug, AbiExample)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug, AbiExample)]
 #[serde(rename_all = "camelCase")]
 pub struct FeeCalculator {
     // The current cost of a signature  This amount may increase/decrease over time based on
     // cluster processing load.
     pub lamports_per_signature: u64,
+}
+
+impl Default for FeeCalculator {
+    fn default() -> Self {
+        Self {
+            lamports_per_signature: 0,
+        }
+    }
 }
 
 impl FeeCalculator {
@@ -19,15 +27,11 @@ impl FeeCalculator {
         }
     }
 
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please do not use, will no longer be available in the future"
-    )]
     pub fn calculate_fee(&self, message: &Message) -> u64 {
         let mut num_signatures: u64 = 0;
         for instruction in &message.instructions {
             let program_index = instruction.program_id_index as usize;
-            // Message may not be sanitized here
+            // Transaction may not be sanitized here
             if program_index < message.account_keys.len() {
                 let id = message.account_keys[program_index];
                 if (secp256k1_program::check_id(&id) || ed25519_program::check_id(&id))
@@ -193,7 +197,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_fee_calculator_calculate_fee() {
         // Default: no fee.
         let message = Message::default();
@@ -217,7 +220,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_fee_calculator_calculate_fee_secp256k1() {
         use crate::instruction::Instruction;
         let pubkey0 = Pubkey::new(&[0; 32]);

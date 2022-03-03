@@ -79,7 +79,7 @@ macro_rules! declare_builtin_name {
 /// use solana_sdk::declare_builtin;
 ///
 /// fn my_process_instruction(
-///     first_instruction_account: usize,
+///     program_id: &Pubkey,
 ///     keyed_accounts: &[KeyedAccount],
 ///     instruction_data: &[u8],
 /// ) -> Result<(), InstructionError> {
@@ -110,7 +110,7 @@ macro_rules! declare_builtin_name {
 /// use solana_sdk::declare_builtin;
 ///
 /// fn my_process_instruction(
-///     first_instruction_account: usize,
+///     program_id: &Pubkey,
 ///     keyed_accounts: &[KeyedAccount],
 ///     instruction_data: &[u8],
 /// ) -> Result<(), InstructionError> {

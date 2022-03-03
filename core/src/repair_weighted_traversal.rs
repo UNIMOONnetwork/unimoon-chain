@@ -1,9 +1,9 @@
 use {
     crate::{
         heaviest_subtree_fork_choice::HeaviestSubtreeForkChoice, repair_service::RepairService,
-        serve_repair::ShredRepairType, tree_diff::TreeDiff,
+        serve_repair::RepairType, tree_diff::TreeDiff,
     },
-    solana_ledger::{blockstore::Blockstore, blockstore_meta::SlotMeta},
+    solana_ledger::blockstore::Blockstore,
     solana_runtime::contains::Contains,
     solana_sdk::{clock::Slot, hash::Hash},
     std::collections::{HashMap, HashSet},
@@ -31,7 +31,7 @@ struct RepairWeightTraversal<'a> {
 }
 
 impl<'a> RepairWeightTraversal<'a> {
-    fn new(tree: &'a HeaviestSubtreeForkChoice) -> Self {
+    pub fn new(tree: &'a HeaviestSubtreeForkChoice) -> Self {
         Self {
             tree,
             pending: vec![Visit::Unvisited(tree.root().0)],
@@ -75,8 +75,7 @@ impl<'a> Iterator for RepairWeightTraversal<'a> {
 pub fn get_best_repair_shreds<'a>(
     tree: &HeaviestSubtreeForkChoice,
     blockstore: &Blockstore,
-    slot_meta_cache: &mut HashMap<Slot, Option<SlotMeta>>,
-    repairs: &mut Vec<ShredRepairType>,
+    repairs: &mut Vec<RepairType>,
     max_new_shreds: usize,
     ignore_slots: &impl Contains<'a, Slot>,
 ) {
@@ -84,6 +83,7 @@ pub fn get_best_repair_shreds<'a>(
     let max_repairs = initial_len + max_new_shreds;
     let weighted_iter = RepairWeightTraversal::new(tree);
     let mut visited_set = HashSet::new();
+    let mut slot_meta_cache = HashMap::new();
     for next in weighted_iter {
         if repairs.len() > max_repairs {
             break;
@@ -157,7 +157,7 @@ pub mod test {
     #[test]
     fn test_weighted_repair_traversal() {
         let stake = 100;
-        let (bank, vote_pubkeys) = bank_utils::setup_bank_and_vote_pubkeys_for_tests(1, stake);
+        let (bank, vote_pubkeys) = bank_utils::setup_bank_and_vote_pubkeys(1, stake);
         let (_, mut heaviest_subtree_fork_choice) = setup_forks();
         let weighted_traversal = RepairWeightTraversal::new(&heaviest_subtree_fork_choice);
         let steps: Vec<_> = weighted_traversal.collect();
@@ -219,12 +219,10 @@ pub mod test {
         // `blockstore` and `heaviest_subtree_fork_choice` match exactly, so should
         // return repairs for all slots (none are completed) in order of traversal
         let mut repairs = vec![];
-        let mut slot_meta_cache = HashMap::default();
         let last_shred = blockstore.meta(0).unwrap().unwrap().received;
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             6,
             &HashSet::default(),
@@ -233,14 +231,13 @@ pub mod test {
             repairs,
             [0, 1, 2, 4, 3, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
 
         // Add some leaves to blockstore, attached to the current best leaf, should prioritize
         // repairing those new leaves before trying other branches
         repairs = vec![];
-        slot_meta_cache = HashMap::default();
         let best_overall_slot = heaviest_subtree_fork_choice.best_overall_slot().0;
         assert_eq!(best_overall_slot, 4);
         blockstore.add_tree(
@@ -253,7 +250,6 @@ pub mod test {
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             6,
             &HashSet::default(),
@@ -262,13 +258,12 @@ pub mod test {
             repairs,
             [0, 1, 2, 4, 6, 7]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
 
         // Completing slots should remove them from the repair list
         repairs = vec![];
-        slot_meta_cache = HashMap::default();
         let completed_shreds: Vec<Shred> = [0, 2, 4, 6]
             .iter()
             .map(|slot| {
@@ -290,7 +285,6 @@ pub mod test {
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             4,
             &HashSet::default(),
@@ -299,19 +293,17 @@ pub mod test {
             repairs,
             [1, 7, 3, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
 
         // Adding incomplete children with higher weighted parents, even if
         // the parents are complete should still be repaired
         repairs = vec![];
-        slot_meta_cache = HashMap::default();
         blockstore.add_tree(tr(2) / (tr(8)), true, false, 2, Hash::default());
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             4,
             &HashSet::default(),
@@ -320,7 +312,7 @@ pub mod test {
             repairs,
             [1, 7, 8, 3]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
     }
@@ -332,11 +324,9 @@ pub mod test {
         // 4 again when the Unvisited(2) event happens
         blockstore.add_tree(tr(2) / (tr(6) / tr(7)), true, false, 2, Hash::default());
         let mut repairs = vec![];
-        let mut slot_meta_cache = HashMap::default();
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             std::usize::MAX,
             &HashSet::default(),
@@ -346,7 +336,7 @@ pub mod test {
             repairs,
             [0, 1, 2, 4, 6, 7, 3, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
     }
@@ -358,13 +348,11 @@ pub mod test {
         // Adding slots to ignore should remove them from the repair set, but
         // should not remove their children
         let mut repairs = vec![];
-        let mut slot_meta_cache = HashMap::default();
         let mut ignore_set: HashSet<Slot> = vec![1, 3].into_iter().collect();
         let last_shred = blockstore.meta(0).unwrap().unwrap().received;
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             std::usize::MAX,
             &ignore_set,
@@ -373,20 +361,18 @@ pub mod test {
             repairs,
             [0, 2, 4, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
 
         // Adding slot 2 to ignore should not remove its unexplored children from
         // the repair set
         repairs = vec![];
-        slot_meta_cache = HashMap::default();
         blockstore.add_tree(tr(2) / (tr(6) / tr(7)), true, false, 2, Hash::default());
         ignore_set.insert(2);
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             std::usize::MAX,
             &ignore_set,
@@ -395,7 +381,7 @@ pub mod test {
             repairs,
             [0, 4, 6, 7, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
 
@@ -403,11 +389,9 @@ pub mod test {
         // child 7 from the repair set
         repairs = vec![];
         ignore_set.insert(6);
-        slot_meta_cache = HashMap::default();
         get_best_repair_shreds(
             &heaviest_subtree_fork_choice,
             &blockstore,
-            &mut slot_meta_cache,
             &mut repairs,
             std::usize::MAX,
             &ignore_set,
@@ -416,7 +400,7 @@ pub mod test {
             repairs,
             [0, 4, 5]
                 .iter()
-                .map(|slot| ShredRepairType::HighestShred(*slot, last_shred))
+                .map(|slot| RepairType::HighestShred(*slot, last_shred))
                 .collect::<Vec<_>>()
         );
     }

@@ -256,17 +256,28 @@ impl Meta {
         &mut self,
         lockup: &LockupArgs,
         signers: &HashSet<Pubkey>,
-        clock: &Clock,
+        clock: Option<&Clock>,
     ) -> Result<(), InstructionError> {
-        // post-stake_program_v4 behavior:
-        // * custodian can update the lockup while in force
-        // * withdraw authority can set a new lockup
-        if self.lockup.is_in_force(clock, None) {
-            if !signers.contains(&self.lockup.custodian) {
-                return Err(InstructionError::MissingRequiredSignature);
+        match clock {
+            None => {
+                // pre-stake_program_v4 behavior: custodian can set lockups at any time
+                if !signers.contains(&self.lockup.custodian) {
+                    return Err(InstructionError::MissingRequiredSignature);
+                }
             }
-        } else if !signers.contains(&self.authorized.withdrawer) {
-            return Err(InstructionError::MissingRequiredSignature);
+            Some(clock) => {
+                // post-stake_program_v4 behavior:
+                // * custodian can update the lockup while in force
+                // * withdraw authority can set a new lockup
+                //
+                if self.lockup.is_in_force(clock, None) {
+                    if !signers.contains(&self.lockup.custodian) {
+                        return Err(InstructionError::MissingRequiredSignature);
+                    }
+                } else if !signers.contains(&self.authorized.withdrawer) {
+                    return Err(InstructionError::MissingRequiredSignature);
+                }
+            }
         }
         if let Some(unix_timestamp) = lockup.unix_timestamp {
             self.lockup.unix_timestamp = unix_timestamp;
@@ -278,6 +289,24 @@ impl Meta {
             self.lockup.custodian = custodian;
         }
         Ok(())
+    }
+
+    pub fn rewrite_rent_exempt_reserve(
+        &mut self,
+        rent: &Rent,
+        data_len: usize,
+    ) -> Option<(u64, u64)> {
+        let corrected_rent_exempt_reserve = rent.minimum_balance(data_len);
+        if corrected_rent_exempt_reserve != self.rent_exempt_reserve {
+            // We forcibly update rent_excempt_reserve even
+            // if rent_exempt_reserve > account_balance, hoping user might restore
+            // rent_exempt status by depositing.
+            let (old, new) = (self.rent_exempt_reserve, corrected_rent_exempt_reserve);
+            self.rent_exempt_reserve = corrected_rent_exempt_reserve;
+            Some((old, new))
+        } else {
+            None
+        }
     }
 
     pub fn auto(authorized: &Pubkey) -> Self {
@@ -375,7 +404,7 @@ impl Delegation {
         } else if let Some((history, mut prev_epoch, mut prev_cluster_stake)) =
             history.and_then(|history| {
                 history
-                    .get(self.deactivation_epoch)
+                    .get(&self.deactivation_epoch)
                     .map(|cluster_stake_at_deactivation_epoch| {
                         (
                             history,
@@ -419,7 +448,7 @@ impl Delegation {
                 if current_epoch >= target_epoch {
                     break;
                 }
-                if let Some(current_cluster_stake) = history.get(current_epoch) {
+                if let Some(current_cluster_stake) = history.get(&current_epoch) {
                     prev_epoch = current_epoch;
                     prev_cluster_stake = current_cluster_stake;
                 } else {
@@ -459,7 +488,7 @@ impl Delegation {
         } else if let Some((history, mut prev_epoch, mut prev_cluster_stake)) =
             history.and_then(|history| {
                 history
-                    .get(self.activation_epoch)
+                    .get(&self.activation_epoch)
                     .map(|cluster_stake_at_activation_epoch| {
                         (
                             history,
@@ -504,7 +533,7 @@ impl Delegation {
                 if current_epoch >= target_epoch || current_epoch >= self.deactivation_epoch {
                     break;
                 }
-                if let Some(current_cluster_stake) = history.get(current_epoch) {
+                if let Some(current_cluster_stake) = history.get(&current_epoch) {
                     prev_epoch = current_epoch;
                     prev_cluster_stake = current_cluster_stake;
                 } else {

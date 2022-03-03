@@ -16,7 +16,9 @@ use {
     },
     solana_ledger::{blockstore::Blockstore, blockstore_db::AccessType},
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Signature},
-    solana_transaction_status::{Encodable, LegacyConfirmedBlock, UiTransactionEncoding},
+    solana_transaction_status::{
+        ConfirmedBlockWithOptionalMetadata, EncodedTransaction, UiTransactionEncoding,
+    },
     std::{
         collections::HashSet,
         path::Path,
@@ -71,13 +73,10 @@ async fn block(slot: Slot, output_format: OutputFormat) -> Result<(), Box<dyn st
         .await
         .map_err(|err| format!("Failed to connect to storage: {:?}", err))?;
 
-    let confirmed_block = bigtable.get_confirmed_block(slot).await?;
-    let legacy_block = confirmed_block
-        .into_legacy_block()
-        .ok_or_else(|| "Failed to read versioned transaction in block".to_string())?;
+    let block = bigtable.get_confirmed_block(slot).await?;
 
     let cli_block = CliBlock {
-        encoded_confirmed_block: legacy_block.encode(UiTransactionEncoding::Base64),
+        encoded_confirmed_block: block.encode(UiTransactionEncoding::Base64),
         slot,
     };
     println!("{}", output_format.formatted_string(&cli_block));
@@ -154,20 +153,16 @@ async fn confirm(
     let mut get_transaction_error = None;
     if verbose {
         match bigtable.get_confirmed_transaction(signature).await {
-            Ok(Some(confirmed_tx)) => {
-                let legacy_confirmed_tx = confirmed_tx
-                    .into_legacy_confirmed_transaction()
-                    .ok_or_else(|| "Failed to read versioned transaction in block".to_string())?;
-
+            Ok(Some(confirmed_transaction)) => {
                 transaction = Some(CliTransaction {
-                    transaction: legacy_confirmed_tx
-                        .tx_with_meta
-                        .transaction
-                        .encode(UiTransactionEncoding::Json),
-                    meta: legacy_confirmed_tx.tx_with_meta.meta.map(|m| m.into()),
-                    block_time: legacy_confirmed_tx.block_time,
-                    slot: Some(legacy_confirmed_tx.slot),
-                    decoded_transaction: legacy_confirmed_tx.tx_with_meta.transaction,
+                    transaction: EncodedTransaction::encode(
+                        confirmed_transaction.transaction.transaction.clone(),
+                        UiTransactionEncoding::Json,
+                    ),
+                    meta: confirmed_transaction.transaction.meta.map(|m| m.into()),
+                    block_time: confirmed_transaction.block_time,
+                    slot: Some(confirmed_transaction.slot),
+                    decoded_transaction: confirmed_transaction.transaction.transaction,
                     prefix: "  ".to_string(),
                     sigverify_status: vec![],
                 });
@@ -199,7 +194,7 @@ pub async fn transaction_history(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bigtable = solana_storage_bigtable::LedgerStorage::new(true, None, None).await?;
 
-    let mut loaded_block: Option<(Slot, LegacyConfirmedBlock)> = None;
+    let mut loaded_block: Option<(Slot, ConfirmedBlockWithOptionalMetadata)> = None;
     while limit > 0 {
         let results = bigtable
             .get_confirmed_signatures_for_address(
@@ -265,10 +260,7 @@ pub async fn transaction_history(
                             println!("  Unable to get confirmed transaction details: {}", err);
                             break;
                         }
-                        Ok(confirmed_block) => {
-                            let block = confirmed_block.into_legacy_block().ok_or_else(|| {
-                                "Failed to read versioned transaction in block".to_string()
-                            })?;
+                        Ok(block) => {
                             loaded_block = Some((result.slot, block));
                         }
                     }

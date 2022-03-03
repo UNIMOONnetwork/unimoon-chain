@@ -5,7 +5,6 @@ use {
     },
     clap::{value_t, value_t_or_exit, App, AppSettings, Arg, ArgMatches, SubCommand},
     console::style,
-    crossbeam_channel::unbounded,
     serde::{Deserialize, Serialize},
     solana_clap_utils::{
         input_parsers::*,
@@ -141,10 +140,9 @@ impl ClusterQuerySubCommands for App<'_, '_> {
             SubCommand::with_name("cluster-version")
                 .about("Get the version of the cluster entrypoint"),
         )
-        // Deprecated in v1.8.0
         .subcommand(
             SubCommand::with_name("fees")
-            .about("Display current cluster fees (Deprecated in v1.8.0)")
+            .about("Display current cluster fees")
             .arg(
                 Arg::with_name("blockhash")
                     .long("blockhash")
@@ -442,7 +440,7 @@ impl ClusterQuerySubCommands for App<'_, '_> {
         )
         .subcommand(
             SubCommand::with_name("rent")
-                .about("Calculate per-epoch and rent-exempt-minimum values for a given account data field length.")
+                .about("Calculate per-epoch and rent-exempt-minimum values for a given account data length.")
                 .arg(
                     Arg::with_name("data_length")
                         .index(1)
@@ -453,7 +451,7 @@ impl ClusterQuerySubCommands for App<'_, '_> {
                                 .map(|_| ())
                                 .map_err(|e| e.to_string())
                         })
-                        .help("Length of data field in the account to calculate rent for, or moniker: [nonce, stake, system, vote]"),
+                        .help("Length of data in the account to calculate rent for, or moniker: [nonce, stake, system, vote]"),
                 )
                 .arg(
                     Arg::with_name("lamports")
@@ -751,10 +749,12 @@ pub fn process_catchup(
                     if let Some(rpc_addr) = contact_info.rpc {
                         break rpc_addr;
                     }
-                    progress_bar.set_message(format!("RPC service not found for {}", node_pubkey));
+                    progress_bar.set_message(&format!("RPC service not found for {}", node_pubkey));
                 } else {
-                    progress_bar
-                        .set_message(format!("Contact information not found for {}", node_pubkey));
+                    progress_bar.set_message(&format!(
+                        "Contact information not found for {}",
+                        node_pubkey
+                    ));
                 }
                 sleep(Duration::from_secs(sleep_interval as u64));
             };
@@ -770,7 +770,7 @@ pub fn process_catchup(
             Ok(reported_node_pubkey) => break reported_node_pubkey,
             Err(err) => {
                 if let ClientErrorKind::Reqwest(err) = err.kind() {
-                    progress_bar.set_message(format!("Connection failed: {}", err));
+                    progress_bar.set_message(&format!("Connection failed: {}", err));
                     sleep(Duration::from_secs(sleep_interval as u64));
                     continue;
                 }
@@ -870,7 +870,7 @@ pub fn process_catchup(
             }
         };
 
-        progress_bar.set_message(format!(
+        progress_bar.set_message(&format!(
             "{} slot(s) {} (us:{} them:{}){}",
             slot_distance.abs(),
             if slot_distance >= 0 {
@@ -939,7 +939,6 @@ pub fn process_fees(
     blockhash: Option<&Hash>,
 ) -> ProcessResult {
     let fees = if let Some(recent_blockhash) = blockhash {
-        #[allow(deprecated)]
         let result = rpc_client.get_fee_calculator_for_blockhash_with_commitment(
             recent_blockhash,
             config.commitment,
@@ -956,7 +955,6 @@ pub fn process_fees(
             CliFees::none()
         }
     } else {
-        #[allow(deprecated)]
         let result = rpc_client.get_fees_with_commitment(config.commitment)?;
         CliFees::some(
             result.context.slot,
@@ -1155,7 +1153,7 @@ pub fn process_show_block_production(
     };
 
     let progress_bar = new_spinner_progress_bar();
-    progress_bar.set_message(format!(
+    progress_bar.set_message(&format!(
         "Fetching confirmed blocks between slots {} and {}...",
         start_slot, end_slot
     ));
@@ -1218,7 +1216,7 @@ pub fn process_show_block_production(
     let mut leader_slot_count = HashMap::new();
     let mut leader_skipped_slots = HashMap::new();
 
-    progress_bar.set_message(format!("Fetching leader schedule for epoch {}...", epoch));
+    progress_bar.set_message(&format!("Fetching leader schedule for epoch {}...", epoch));
     let leader_schedule = rpc_client
         .get_leader_schedule_with_commitment(Some(start_slot), CommitmentConfig::finalized())?;
     if leader_schedule.is_none() {
@@ -1237,7 +1235,7 @@ pub fn process_show_block_production(
         }
     }
 
-    progress_bar.set_message(format!(
+    progress_bar.set_message(&format!(
         "Processing {} slots containing {} blocks and {} empty slots...",
         total_slots, total_blocks_produced, total_slots_skipped
     ));
@@ -1351,7 +1349,7 @@ pub fn process_ping(
     fixed_blockhash: &Option<Hash>,
     print_timestamp: bool,
 ) -> ProcessResult {
-    let (signal_sender, signal_receiver) = unbounded();
+    let (signal_sender, signal_receiver) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || {
         let _ = signal_sender.send(());
     })
@@ -1363,7 +1361,7 @@ pub fn process_ping(
     let mut confirmed_count = 0;
     let mut confirmation_time: VecDeque<u64> = VecDeque::with_capacity(1024);
 
-    let mut blockhash = rpc_client.get_latest_blockhash()?;
+    let (mut blockhash, mut fee_calculator) = rpc_client.get_recent_blockhash()?;
     let mut lamports = 0;
     let mut blockhash_acquired = Instant::now();
     let mut blockhash_from_cluster = false;
@@ -1378,8 +1376,9 @@ pub fn process_ping(
         let now = Instant::now();
         if fixed_blockhash.is_none() && now.duration_since(blockhash_acquired).as_secs() > 60 {
             // Fetch a new blockhash every minute
-            let new_blockhash = rpc_client.get_new_latest_blockhash(&blockhash)?;
+            let (new_blockhash, new_fee_calculator) = rpc_client.get_new_blockhash(&blockhash)?;
             blockhash = new_blockhash;
+            fee_calculator = new_fee_calculator;
             lamports = 0;
             blockhash_acquired = Instant::now();
         }
@@ -1395,7 +1394,7 @@ pub fn process_ping(
             rpc_client,
             false,
             SpendAmount::Some(lamports),
-            &blockhash,
+            &fee_calculator,
             &config.signers[0].pubkey(),
             build_message,
             config.commitment,
@@ -1644,8 +1643,9 @@ pub fn process_live_slots(config: &CliConfig) -> ProcessResult {
                         "{:?} | root slot advancing at {:.2} slots/second",
                         new_info, slots_per_second
                     )
-                };
-                slot_progress.set_message(message.clone());
+                }
+                .to_owned();
+                slot_progress.set_message(&message);
 
                 if let Some(previous) = current {
                     let slot_delta: i64 = new_info.slot as i64 - previous.slot as i64;
@@ -2129,7 +2129,7 @@ pub fn process_calculate_rent(
         timing::years_as_slots(1.0, &seconds_per_tick, clock::DEFAULT_TICKS_PER_SLOT);
     let slots_per_epoch = epoch_schedule.slots_per_epoch as f64;
     let years_per_epoch = slots_per_epoch / slots_per_year;
-    let lamports_per_epoch = rent.due(0, data_length, years_per_epoch).lamports();
+    let (lamports_per_epoch, _) = rent.due(0, data_length, years_per_epoch);
     let cli_rent_calculation = CliRentCalculation {
         lamports_per_byte_year: rent.lamports_per_byte_year,
         lamports_per_epoch,

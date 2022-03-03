@@ -8,10 +8,12 @@ use {
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
-    Recv(crossbeam_channel::RecvError),
+    Recv(std::sync::mpsc::RecvError),
+    CrossbeamRecvTimeout(crossbeam_channel::RecvTimeoutError),
     ReadyTimeout,
-    RecvTimeout(crossbeam_channel::RecvTimeoutError),
-    TrySend,
+    RecvTimeout(std::sync::mpsc::RecvTimeoutError),
+    CrossbeamSend,
+    TryCrossbeamSend,
     Serialize(std::boxed::Box<bincode::ErrorKind>),
     ClusterInfo(cluster_info::ClusterInfoError),
     Send,
@@ -30,9 +32,14 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl std::convert::From<crossbeam_channel::RecvError> for Error {
-    fn from(e: crossbeam_channel::RecvError) -> Error {
+impl std::convert::From<std::sync::mpsc::RecvError> for Error {
+    fn from(e: std::sync::mpsc::RecvError) -> Error {
         Error::Recv(e)
+    }
+}
+impl std::convert::From<crossbeam_channel::RecvTimeoutError> for Error {
+    fn from(e: crossbeam_channel::RecvTimeoutError) -> Error {
+        Error::CrossbeamRecvTimeout(e)
     }
 }
 impl std::convert::From<crossbeam_channel::ReadyTimeoutError> for Error {
@@ -40,8 +47,8 @@ impl std::convert::From<crossbeam_channel::ReadyTimeoutError> for Error {
         Error::ReadyTimeout
     }
 }
-impl std::convert::From<crossbeam_channel::RecvTimeoutError> for Error {
-    fn from(e: crossbeam_channel::RecvTimeoutError) -> Error {
+impl std::convert::From<std::sync::mpsc::RecvTimeoutError> for Error {
+    fn from(e: std::sync::mpsc::RecvTimeoutError) -> Error {
         Error::RecvTimeout(e)
     }
 }
@@ -50,13 +57,18 @@ impl std::convert::From<cluster_info::ClusterInfoError> for Error {
         Error::ClusterInfo(e)
     }
 }
-impl<T> std::convert::From<crossbeam_channel::TrySendError<T>> for Error {
-    fn from(_e: crossbeam_channel::TrySendError<T>) -> Error {
-        Error::TrySend
-    }
-}
 impl<T> std::convert::From<crossbeam_channel::SendError<T>> for Error {
     fn from(_e: crossbeam_channel::SendError<T>) -> Error {
+        Error::CrossbeamSend
+    }
+}
+impl<T> std::convert::From<crossbeam_channel::TrySendError<T>> for Error {
+    fn from(_e: crossbeam_channel::TrySendError<T>) -> Error {
+        Error::TryCrossbeamSend
+    }
+}
+impl<T> std::convert::From<std::sync::mpsc::SendError<T>> for Error {
+    fn from(_e: std::sync::mpsc::SendError<T>) -> Error {
         Error::Send
     }
 }
@@ -90,12 +102,16 @@ impl std::convert::From<GossipError> for Error {
 mod tests {
     use {
         crate::result::{Error, Result},
-        crossbeam_channel::{unbounded, RecvError, RecvTimeoutError},
-        std::{io, io::Write, panic},
+        std::{
+            io,
+            io::Write,
+            panic,
+            sync::mpsc::{channel, RecvError, RecvTimeoutError},
+        },
     };
 
     fn send_error() -> Result<()> {
-        let (s, r) = unbounded();
+        let (s, r) = channel();
         drop(r);
         s.send(())?;
         Ok(())

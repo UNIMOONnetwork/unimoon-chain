@@ -1,24 +1,24 @@
 [package]
 name = "solana-merkle-tree"
-version = "1.10.0"
+version = "1.8.17"
 description = "Solana Merkle Tree"
 authors = ["Solana Maintainers <maintainers@solana.foundation>"]
 repository = "https://github.com/solana-labs/solana"
 license = "Apache-2.0"
 homepage = "https://solana.com/"
 documentation = "https://docs.rs/solana-merkle-tree"
-edition = "2021"
+edition = "2018"
 
 [dependencies]
-solana-program = { path = "../sdk/program", version = "=1.10.0" }
+solana-program = { path = "../sdk/program", version = "=1.8.17" }
 fast-math = "0.1"
 
 # This can go once the BPF toolchain target Rust 1.42.0+
 [target.bpfel-unknown-unknown.dependencies]
-matches = "0.1.9"
+matches = "0.1.8"
 
 [dev-dependencies]
-hex = "0.4.3"
+hex = "0.4.2"
 
 [lib]
 crate-type = ["lib"]

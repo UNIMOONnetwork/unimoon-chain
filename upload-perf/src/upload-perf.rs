@@ -61,27 +61,26 @@ fn main() {
                 let name = v["name"].as_str().unwrap().trim_matches('\"').to_string();
 
                 if last_commit.is_none() {
-                    last_commit = get_last_metrics("commit", &db, &name, branch).ok();
+                    last_commit = get_last_metrics(&"commit".to_string(), &db, &name, branch).ok();
                 }
 
                 let median: i64 = v["median"].to_string().parse().unwrap();
                 let deviation: i64 = v["deviation"].to_string().parse().unwrap();
-                assert!(!upload_metrics, "TODO");
-                /*
-                solana_metrics::datapoint_info!(
-                    &v["name"].as_str().unwrap().trim_matches('\"'),
-                    ("test", "bench", String),
-                    ("branch", branch.to_string(), String),
-                    ("median", median, i64),
-                    ("deviation", deviation, i64),
-                    ("commit", git_commit_hash.trim().to_string(), String)
-                );
-                */
-
+                if upload_metrics {
+                    panic!("TODO...");
+                    // solana_metrics::datapoint_info!(
+                    //     &v["name"].as_str().unwrap().trim_matches('\"'),
+                    //     ("test", "bench", String),
+                    //     ("branch", branch.to_string(), String),
+                    //     ("median", median, i64),
+                    //     ("deviation", deviation, i64),
+                    //     ("commit", git_commit_hash.trim().to_string(), String)
+                    // );
+                }
                 let last_median =
-                    get_last_metrics("median", &db, &name, branch).unwrap_or_default();
-                let last_deviation =
-                    get_last_metrics("deviation", &db, &name, branch).unwrap_or_default();
+                    get_last_metrics(&"median".to_string(), &db, &name, branch).unwrap_or_default();
+                let last_deviation = get_last_metrics(&"deviation".to_string(), &db, &name, branch)
+                    .unwrap_or_default();
 
                 results.insert(name, (median, deviation, last_median, last_deviation));
             }

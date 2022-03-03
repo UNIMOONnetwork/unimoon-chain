@@ -1,5 +1,4 @@
 #![allow(clippy::integer_arithmetic)]
-mod postgres_client_transaction;
 
 /// A concurrent implementation for writing accounts into the PostgreSQL in parallel.
 use {
@@ -10,7 +9,6 @@ use {
     crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender},
     log::*,
     postgres::{Client, NoTls, Statement},
-    postgres_client_transaction::LogTransactionRequest,
     solana_accountsdb_plugin_interface::accountsdb_plugin_interface::{
         AccountsDbPluginError, ReplicaAccountInfo, SlotStatus,
     },
@@ -25,7 +23,7 @@ use {
         thread::{self, sleep, Builder, JoinHandle},
         time::Duration,
     },
-    tokio_postgres::types,
+    tokio_postgres::types::ToSql,
 };
 
 /// The maximum asynchronous requests allowed in the channel to avoid excessive
@@ -43,7 +41,6 @@ struct PostgresSqlClientWrapper {
     bulk_account_insert_stmt: Statement,
     update_slot_with_parent_stmt: Statement,
     update_slot_without_parent_stmt: Statement,
-    update_transaction_log_stmt: Statement,
 }
 
 pub struct SimplePostgresClient {
@@ -190,11 +187,6 @@ pub trait PostgresClient {
     ) -> Result<(), AccountsDbPluginError>;
 
     fn notify_end_of_startup(&mut self) -> Result<(), AccountsDbPluginError>;
-
-    fn log_transaction(
-        &mut self,
-        transaction_log_info: LogTransactionRequest,
-    ) -> Result<(), AccountsDbPluginError>;
 }
 
 impl SimplePostgresClient {
@@ -415,7 +407,7 @@ impl SimplePostgresClient {
         if self.pending_account_updates.len() == self.batch_size {
             let mut measure = Measure::start("accountsdb-plugin-postgres-prepare-values");
 
-            let mut values: Vec<&(dyn types::ToSql + Sync)> =
+            let mut values: Vec<&(dyn ToSql + Sync)> =
                 Vec::with_capacity(self.batch_size * ACCOUNT_COLUMN_COUNT);
             let updated_on = Utc::now().naive_utc();
             for j in 0..self.batch_size {
@@ -499,8 +491,6 @@ impl SimplePostgresClient {
             Self::build_slot_upsert_statement_with_parent(&mut client, config)?;
         let update_slot_without_parent_stmt =
             Self::build_slot_upsert_statement_without_parent(&mut client, config)?;
-        let update_transaction_log_stmt =
-            Self::build_transaction_info_upsert_statement(&mut client, config)?;
 
         let batch_size = config
             .batch_size
@@ -515,7 +505,6 @@ impl SimplePostgresClient {
                 bulk_account_insert_stmt,
                 update_slot_with_parent_stmt,
                 update_slot_without_parent_stmt,
-                update_transaction_log_stmt,
             }),
         })
     }
@@ -584,13 +573,6 @@ impl PostgresClient for SimplePostgresClient {
     fn notify_end_of_startup(&mut self) -> Result<(), AccountsDbPluginError> {
         self.flush_buffered_writes()
     }
-
-    fn log_transaction(
-        &mut self,
-        transaction_log_info: LogTransactionRequest,
-    ) -> Result<(), AccountsDbPluginError> {
-        self.log_transaction_impl(transaction_log_info)
-    }
 }
 
 struct UpdateAccountRequest {
@@ -604,11 +586,9 @@ struct UpdateSlotRequest {
     slot_status: SlotStatus,
 }
 
-#[warn(clippy::large_enum_variant)]
 enum DbWorkItem {
-    UpdateAccount(Box<UpdateAccountRequest>),
-    UpdateSlot(Box<UpdateSlotRequest>),
-    LogTransaction(Box<LogTransactionRequest>),
+    UpdateAccount(UpdateAccountRequest),
+    UpdateSlot(UpdateSlotRequest),
 }
 
 impl PostgresClientWorker {
@@ -664,14 +644,6 @@ impl PostgresClientWorker {
                             request.slot_status,
                         ) {
                             error!("Failed to update slot: ({})", err);
-                            if panic_on_db_errors {
-                                abort();
-                            }
-                        }
-                    }
-                    DbWorkItem::LogTransaction(transaction_log_info) => {
-                        if let Err(err) = self.client.log_transaction(*transaction_log_info) {
-                            error!("Failed to update transaction: ({})", err);
                             if panic_on_db_errors {
                                 abort();
                             }
@@ -810,10 +782,10 @@ impl ParallelPostgresClient {
             );
         }
         let mut measure = Measure::start("accountsdb-plugin-posgres-create-work-item");
-        let wrk_item = DbWorkItem::UpdateAccount(Box::new(UpdateAccountRequest {
+        let wrk_item = DbWorkItem::UpdateAccount(UpdateAccountRequest {
             account: DbAccountInfo::new(account, slot),
             is_startup,
-        }));
+        });
 
         measure.stop();
 
@@ -853,14 +825,11 @@ impl ParallelPostgresClient {
         parent: Option<u64>,
         status: SlotStatus,
     ) -> Result<(), AccountsDbPluginError> {
-        if let Err(err) = self
-            .sender
-            .send(DbWorkItem::UpdateSlot(Box::new(UpdateSlotRequest {
-                slot,
-                parent,
-                slot_status: status,
-            })))
-        {
+        if let Err(err) = self.sender.send(DbWorkItem::UpdateSlot(UpdateSlotRequest {
+            slot,
+            parent,
+            slot_status: status,
+        })) {
             return Err(AccountsDbPluginError::SlotStatusUpdateError {
                 msg: format!("Failed to update the slot {:?}, error: {:?}", slot, err),
             });

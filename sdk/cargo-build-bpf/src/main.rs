@@ -23,7 +23,6 @@ struct Config<'a> {
     cargo_args: Option<Vec<&'a str>>,
     bpf_out_dir: Option<PathBuf>,
     bpf_sdk: PathBuf,
-    bpf_tools_version: &'a str,
     dump: bool,
     features: Vec<String>,
     generate_child_script_on_failure: bool,
@@ -45,7 +44,6 @@ impl Default for Config<'_> {
                 .join("sdk")
                 .join("bpf"),
             bpf_out_dir: None,
-            bpf_tools_version: "(unknown)",
             dump: false,
             features: vec![],
             generate_child_script_on_failure: false,
@@ -117,6 +115,7 @@ where
 fn install_if_missing(
     config: &Config,
     package: &str,
+    version: &str,
     url: &str,
     download_file_name: &str,
     target_path: &Path,
@@ -149,7 +148,7 @@ fn install_if_missing(
         fs::create_dir_all(&target_path).map_err(|err| err.to_string())?;
         let mut url = String::from(url);
         url.push('/');
-        url.push_str(config.bpf_tools_version);
+        url.push_str(version);
         url.push('/');
         url.push_str(download_file_name);
         let download_file_path = target_path.join(download_file_name);
@@ -418,7 +417,7 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
                 );
                 None
             }
-            1 => Some(cdylib_targets[0].replace('-', "_")),
+            1 => Some(cdylib_targets[0].replace("-", "_")),
             _ => {
                 eprintln!(
                     "{} crate contains multiple cdylib targets: {:?}",
@@ -431,7 +430,10 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
 
     let legacy_program_feature_present = package.name == "solana-sdk";
     let root_package_dir = &package.manifest_path.parent().unwrap_or_else(|| {
-        eprintln!("Unable to get directory of {}", package.manifest_path);
+        eprintln!(
+            "Unable to get directory of {}",
+            package.manifest_path.display()
+        );
         exit(1);
     });
 
@@ -448,7 +450,8 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
     env::set_current_dir(&root_package_dir).unwrap_or_else(|err| {
         eprintln!(
             "Unable to set current directory to {}: {}",
-            root_package_dir, err
+            root_package_dir.display(),
+            err
         );
         exit(1);
     });
@@ -463,9 +466,7 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
     if legacy_program_feature_present {
         println!("Legacy program feature detected");
     }
-    let bpf_tools_download_file_name = if cfg!(target_os = "windows") {
-        "solana-bpf-tools-windows.tar.bz2"
-    } else if cfg!(target_os = "macos") {
+    let bpf_tools_download_file_name = if cfg!(target_os = "macos") {
         "solana-bpf-tools-osx.tar.bz2"
     } else {
         "solana-bpf-tools-linux.tar.bz2"
@@ -475,15 +476,20 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
         eprintln!("Can't get home directory path: {}", err);
         exit(1);
     }));
+
+    // The following line is scanned by CI configuration script to
+    // separate cargo caches according to the version of sbf-tools.
+    let bpf_tools_version = "v1.23";
     let package = "bpf-tools";
     let target_path = home_dir
         .join(".cache")
         .join("solana")
-        .join(config.bpf_tools_version)
+        .join(bpf_tools_version)
         .join(package);
     install_if_missing(
         config,
         package,
+        bpf_tools_version,
         "https://github.com/solana-labs/bpf-tools/releases/download",
         bpf_tools_download_file_name,
         &target_path,
@@ -515,14 +521,20 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
     env::set_var("AR", llvm_bin.join("llvm-ar"));
     env::set_var("OBJDUMP", llvm_bin.join("llvm-objdump"));
     env::set_var("OBJCOPY", llvm_bin.join("llvm-objcopy"));
-
-    if config.verbose {
-        println!(
-            "RUSTFLAGS={}",
-            env::var("RUSTFLAGS").ok().as_deref().unwrap_or("")
-        );
+    let rustflags = match env::var("RUSTFLAGS") {
+        Ok(rf) => {
+            if rf.contains("-C lto=no") {
+                rf
+            } else {
+                rf + &" -C lto=no".to_string()
+            }
+        }
+        _ => "-C lto=no".to_string(),
     };
-
+    if config.verbose {
+        println!("RUSTFLAGS={}", rustflags);
+    }
+    env::set_var("RUSTFLAGS", rustflags);
     let cargo_build = PathBuf::from("cargo");
     let mut cargo_build_args = vec![
         "+bpf",
@@ -598,17 +610,6 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
         }
 
         if file_older_or_missing(&program_unstripped_so, &program_so) {
-            #[cfg(windows)]
-            let output = spawn(
-                &llvm_bin.join("llvm-objcopy"),
-                &[
-                    "--strip-all".as_ref(),
-                    program_unstripped_so.as_os_str(),
-                    program_so.as_os_str(),
-                ],
-                config.generate_child_script_on_failure,
-            );
-            #[cfg(not(windows))]
             let output = spawn(
                 &config.bpf_sdk.join("scripts").join("strip.sh"),
                 &[&program_unstripped_so, &program_so],
@@ -620,26 +621,13 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
         }
 
         if config.dump && file_older_or_missing(&program_unstripped_so, &program_dump) {
-            let dump_script = config.bpf_sdk.join("scripts").join("dump.sh");
-            #[cfg(windows)]
-            {
-                eprintln!("Using Bash scripts from within a program is not supported on Windows, skipping `--dump`.");
-                eprintln!(
-                    "Please run \"{} {} {}\" from a Bash-supporting shell, then re-run this command to see the processed program dump.",
-                    &dump_script.display(),
-                    &program_unstripped_so.display(),
-                    &program_dump.display());
-            }
-            #[cfg(not(windows))]
-            {
-                let output = spawn(
-                    &dump_script,
-                    &[&program_unstripped_so, &program_dump],
-                    config.generate_child_script_on_failure,
-                );
-                if config.verbose {
-                    println!("{}", output);
-                }
+            let output = spawn(
+                &config.bpf_sdk.join("scripts").join("dump.sh"),
+                &[&program_unstripped_so, &program_dump],
+                config.generate_child_script_on_failure,
+            );
+            if config.verbose {
+                println!("{}", output);
             }
             postprocess_dump(&program_dump);
         }
@@ -698,6 +686,10 @@ fn build_bpf(config: Config, manifest_path: Option<PathBuf>) {
 }
 
 fn main() {
+    if cfg!(windows) {
+        println!("Solana Rust BPF toolchain is not available on Windows");
+        exit(1);
+    }
     let default_config = Config::default();
     let default_bpf_sdk = format!("{}", default_config.bpf_sdk.display());
 
@@ -710,13 +702,9 @@ fn main() {
         }
     }
 
-    // The following line is scanned by CI configuration script to
-    // separate cargo caches according to the version of sbf-tools.
-    let bpf_tools_version = "v1.23";
-    let version = format!("{}\nbpf-tools {}", crate_version!(), bpf_tools_version);
     let matches = App::new(crate_name!())
         .about(crate_description!())
-        .version(version.as_str())
+        .version(crate_version!())
         .arg(
             Arg::with_name("bpf_out_dir")
                 .env("BPF_OUT_PATH")
@@ -819,11 +807,10 @@ fn main() {
                     .join(bpf_out_dir)
             }
         }),
-        bpf_tools_version,
         dump: matches.is_present("dump"),
         features: values_t!(matches, "features", String)
             .ok()
-            .unwrap_or_default(),
+            .unwrap_or_else(Vec::new),
         generate_child_script_on_failure: matches.is_present("generate_child_script_on_failure"),
         no_default_features: matches.is_present("no_default_features"),
         offline: matches.is_present("offline"),

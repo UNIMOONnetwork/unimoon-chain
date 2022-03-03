@@ -9,23 +9,20 @@ use {
 
 type AccountsDbFields = super::AccountsDbFields<SerializableAccountStorageEntry>;
 
-/// the serialized type is fixed as usize
-pub type AppendVecIdSerialized = usize;
-
 // Serializable version of AccountStorageEntry for snapshot format
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) struct SerializableAccountStorageEntry {
-    id: AppendVecIdSerialized,
+    id: AppendVecId,
     accounts_current_len: usize,
 }
 
 pub trait SerializableStorage {
-    fn id(&self) -> AppendVecIdSerialized;
+    fn id(&self) -> AppendVecId;
     fn current_len(&self) -> usize;
 }
 
 impl SerializableStorage for SerializableAccountStorageEntry {
-    fn id(&self) -> AppendVecIdSerialized {
+    fn id(&self) -> AppendVecId {
         self.id
     }
     fn current_len(&self) -> usize {
@@ -39,7 +36,7 @@ impl solana_frozen_abi::abi_example::IgnoreAsHelper for SerializableAccountStora
 impl From<&AccountStorageEntry> for SerializableAccountStorageEntry {
     fn from(rhs: &AccountStorageEntry) -> Self {
         Self {
-            id: rhs.append_vec_id() as AppendVecIdSerialized,
+            id: rhs.append_vec_id(),
             accounts_current_len: rhs.accounts.len(),
         }
     }
@@ -79,10 +76,10 @@ pub(crate) struct DeserializableVersionedBank {
     pub(crate) epoch_schedule: EpochSchedule,
     pub(crate) inflation: Inflation,
     pub(crate) stakes: Stakes,
-    #[allow(dead_code)]
     pub(crate) unused_accounts: UnusedAccounts,
     pub(crate) epoch_stakes: HashMap<Epoch, EpochStakes>,
     pub(crate) is_delta: bool,
+    pub(crate) message_processor: MessageProcessor,
 }
 
 impl From<DeserializableVersionedBank> for BankFieldsToDeserialize {
@@ -159,6 +156,7 @@ pub(crate) struct SerializableVersionedBank<'a> {
     pub(crate) unused_accounts: UnusedAccounts,
     pub(crate) epoch_stakes: &'a HashMap<Epoch, EpochStakes>,
     pub(crate) is_delta: bool,
+    pub(crate) message_processor: MessageProcessor,
 }
 
 impl<'a> From<crate::bank::BankFieldsToSerialize<'a>> for SerializableVersionedBank<'a> {
@@ -199,6 +197,7 @@ impl<'a> From<crate::bank::BankFieldsToSerialize<'a>> for SerializableVersionedB
             unused_accounts: new(),
             epoch_stakes: rhs.epoch_stakes,
             is_delta: rhs.is_delta,
+            message_processor: new(),
         }
     }
 }
@@ -242,7 +241,7 @@ impl<'a> TypeContext<'a> for Context {
         let version = serializable_db
             .accounts_db
             .write_version
-            .load(Ordering::Acquire);
+            .load(Ordering::Relaxed);
 
         // (1st of 3 elements) write the list of account storage entry lists out as a map
         let entry_count = RefCell::<usize>::new(0);

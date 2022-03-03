@@ -1,14 +1,14 @@
 use {
     crate::{
         args::{DistributeTokensArgs, SplTokenArgs},
-        commands::{get_fees_for_messages, Allocation, Error, FundingSource},
+        commands::{Allocation, Error, FundingSource},
     },
     console::style,
     solana_account_decoder::parse_token::{
         pubkey_from_spl_token, real_number_string, real_number_string_trimmed, spl_token_pubkey,
     },
     solana_client::rpc_client::RpcClient,
-    solana_sdk::{instruction::Instruction, message::Message, native_token::lamports_to_sol},
+    solana_sdk::{instruction::Instruction, native_token::lamports_to_sol},
     solana_transaction_status::parse_token::spl_token_instruction,
     spl_associated_token_account::{create_associated_token_account, get_associated_token_address},
     spl_token::{
@@ -82,7 +82,7 @@ pub fn build_spl_token_instructions(
 }
 
 pub fn check_spl_token_balances(
-    messages: &[Message],
+    num_signatures: usize,
     allocations: &[Allocation],
     client: &RpcClient,
     args: &DistributeTokensArgs,
@@ -93,7 +93,12 @@ pub fn check_spl_token_balances(
         .as_ref()
         .expect("spl_token_args must be some");
     let allocation_amount: u64 = allocations.iter().map(|x| x.amount).sum();
-    let fees = get_fees_for_messages(messages, client)?;
+
+    let fee_calculator = client.get_recent_blockhash()?.1;
+    let fees = fee_calculator
+        .lamports_per_signature
+        .checked_mul(num_signatures as u64)
+        .unwrap();
 
     let token_account_rent_exempt_balance =
         client.get_minimum_balance_for_rent_exemption(SplTokenAccount::LEN)?;

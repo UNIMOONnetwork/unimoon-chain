@@ -49,9 +49,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 = --enable-rpc-transaction-history ]]; then
       args+=("$1")
       shift
-    elif [[ $1 = --rpc-pubsub-enable-block-subscription ]]; then
-      args+=("$1")
-      shift
     elif [[ $1 = --enable-cpi-and-log-storage ]]; then
       args+=("$1")
       shift
@@ -79,13 +76,10 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --maximum-snapshots-to-retain ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --no-snapshot-fetch ]]; then
+    elif [[ $1 == --accounts-db-skip-shrink ]]; then
       args+=("$1")
       shift
     elif [[ $1 == --allow-private-addr ]]; then
-      args+=("$1")
-      shift
-    elif [[ $1 == --accounts-db-skip-shrink ]]; then
       args+=("$1")
       shift
     elif [[ $1 == --skip-require-tower ]]; then
@@ -123,12 +117,10 @@ args+=(
   --ledger "$ledger_dir"
   --rpc-port 8899
   --snapshot-interval-slots 200
-  --no-incremental-snapshots
   --identity "$identity"
   --vote-account "$vote_account"
   --rpc-faucet-address 127.0.0.1:9900
   --no-poh-speed-test
-  --no-os-network-limits-test
   --no-wait-for-vote-to-start-leader
   --full-rpc-api
 )

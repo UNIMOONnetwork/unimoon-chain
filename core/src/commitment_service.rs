@@ -1,6 +1,5 @@
 use {
     crate::consensus::Stake,
-    crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
     solana_measure::measure::Measure,
     solana_metrics::datapoint_info,
     solana_rpc::rpc_subscriptions::RpcSubscriptions,
@@ -15,6 +14,7 @@ use {
         collections::HashMap,
         sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc::{channel, Receiver, RecvTimeoutError, Sender},
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
@@ -63,7 +63,7 @@ impl AggregateCommitmentService {
         let (sender, receiver): (
             Sender<CommitmentAggregationData>,
             Receiver<CommitmentAggregationData>,
-        ) = unbounded();
+        ) = channel();
         let exit_ = exit.clone();
         (
             sender,
@@ -97,8 +97,11 @@ impl AggregateCommitmentService {
                 return Ok(());
             }
 
-            let aggregation_data = receiver.recv_timeout(Duration::from_secs(1))?;
-            let aggregation_data = receiver.try_iter().last().unwrap_or(aggregation_data);
+            let mut aggregation_data = receiver.recv_timeout(Duration::from_secs(1))?;
+
+            while let Ok(new_data) = receiver.try_recv() {
+                aggregation_data = new_data;
+            }
 
             let ancestors = aggregation_data.bank.status_cache_ancestors();
             if ancestors.is_empty() {
@@ -429,7 +432,7 @@ mod tests {
         );
 
         // Create bank
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        let bank = Arc::new(Bank::new(&genesis_config));
 
         let mut vote_state1 = VoteState::from(&vote_account1).unwrap();
         vote_state1.process_slot_vote_unchecked(3);
@@ -509,7 +512,7 @@ mod tests {
             vec![100; 1],
         );
 
-        let bank0 = Bank::new_for_tests(&genesis_config);
+        let bank0 = Bank::new(&genesis_config);
         let mut bank_forks = BankForks::new(bank0);
 
         // Fill bank_forks with banks with votes landing in the next slot

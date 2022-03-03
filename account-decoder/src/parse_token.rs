@@ -15,29 +15,14 @@ use {
 
 // A helper function to convert spl_token::id() as spl_sdk::pubkey::Pubkey to
 // solana_sdk::pubkey::Pubkey
-fn spl_token_id() -> Pubkey {
+pub fn spl_token_id() -> Pubkey {
     Pubkey::new_from_array(spl_token::id().to_bytes())
-}
-
-// Returns all known SPL Token program ids
-pub fn spl_token_ids() -> Vec<Pubkey> {
-    vec![spl_token_id()]
-}
-
-// Check if the provided program id as a known SPL Token program id
-pub fn is_known_spl_token_id(program_id: &Pubkey) -> bool {
-    *program_id == spl_token_id()
 }
 
 // A helper function to convert spl_token::native_mint::id() as spl_sdk::pubkey::Pubkey to
 // solana_sdk::pubkey::Pubkey
 pub fn spl_token_native_mint() -> Pubkey {
     Pubkey::new_from_array(spl_token::native_mint::id().to_bytes())
-}
-
-// The program id of the `spl_token_native_mint` account
-pub fn spl_token_native_mint_program_id() -> Pubkey {
-    spl_token_id()
 }
 
 // A helper function to convert a solana_sdk::pubkey::Pubkey to spl_sdk::pubkey::Pubkey
@@ -133,7 +118,6 @@ pub fn parse_token(
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "type", content = "info")]
-#[allow(clippy::large_enum_variant)]
 pub enum TokenAccountType {
     Account(UiTokenAccount),
     Mint(UiMint),

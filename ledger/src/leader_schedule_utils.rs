@@ -61,10 +61,6 @@ pub fn num_ticks_left_in_slot(bank: &Bank, tick_height: u64) -> u64 {
     bank.ticks_per_slot() - tick_height % bank.ticks_per_slot()
 }
 
-pub fn first_of_consecutive_leader_slots(slot: Slot) -> Slot {
-    (slot / NUM_CONSECUTIVE_LEADER_SLOTS) * NUM_CONSECUTIVE_LEADER_SLOTS
-}
-
 fn sort_stakes(stakes: &mut Vec<(Pubkey, u64)>) {
     // Sort first by stake. If stakes are the same, sort by pubkey to ensure a
     // deterministic result.
@@ -96,7 +92,7 @@ mod tests {
         let genesis_config =
             create_genesis_config_with_leader(0, &pubkey, bootstrap_validator_stake_lamports())
                 .genesis_config;
-        let bank = Bank::new_for_tests(&genesis_config);
+        let bank = Bank::new(&genesis_config);
 
         let pubkeys_and_stakes: Vec<_> = bank
             .staked_nodes()
@@ -122,7 +118,7 @@ mod tests {
         let genesis_config =
             create_genesis_config_with_leader(42, &pubkey, bootstrap_validator_stake_lamports())
                 .genesis_config;
-        let bank = Bank::new_for_tests(&genesis_config);
+        let bank = Bank::new(&genesis_config);
         assert_eq!(slot_leader_at(bank.slot(), &bank).unwrap(), pubkey);
     }
 

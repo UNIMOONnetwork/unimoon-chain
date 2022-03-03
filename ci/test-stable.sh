@@ -21,16 +21,15 @@ export RUST_BACKTRACE=1
 export RUSTFLAGS="-D warnings"
 source scripts/ulimit-n.sh
 
-# limit jobs to 4gb/thread
-JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (4 * 1024 * 1024))}')
+# Limit compiler jobs to reduce memory usage
+# on machines with 2gb/thread of memory
 NPROC=$(nproc)
-JOBS=$((JOBS>NPROC ? NPROC : JOBS))
-
+NPROC=$((NPROC>14 ? 14 : NPROC))
 
 echo "Executing $testName"
 case $testName in
 test-stable)
-  _ "$cargo" stable test --jobs "$JOBS" --all --exclude solana-local-cluster ${V:+--verbose} -- --nocapture
+  _ "$cargo" stable test --jobs "$NPROC" --all --exclude solana-local-cluster ${V:+--verbose} -- --nocapture
   ;;
 test-stable-bpf)
   # Clear the C dependency files, if dependency moves these files are not regenerated
@@ -42,32 +41,29 @@ test-stable-bpf)
 
   # solana-keygen required when building C programs
   _ "$cargo" build --manifest-path=keygen/Cargo.toml
-
   export PATH="$PWD/target/debug":$PATH
   cargo_build_bpf="$(realpath ./cargo-build-bpf)"
-  cargo_test_bpf="$(realpath ./cargo-test-bpf)"
 
   # BPF solana-sdk legacy compile test
   "$cargo_build_bpf" --manifest-path sdk/Cargo.toml
 
-  # BPF C program system tests
+  # BPF Program unit tests
+  "$cargo" test --manifest-path programs/bpf/Cargo.toml
+  "$cargo_build_bpf" --manifest-path programs/bpf/Cargo.toml --bpf-sdk sdk/bpf
+
+  # BPF program system tests
   _ make -C programs/bpf/c tests
   _ "$cargo" stable test \
     --manifest-path programs/bpf/Cargo.toml \
     --no-default-features --features=bpf_c,bpf_rust -- --nocapture
 
-  # BPF Rust program unit tests
+  # Dump BPF program assembly listings
   for bpf_test in programs/bpf/rust/*; do
     if pushd "$bpf_test"; then
-      "$cargo" test
-      "$cargo_build_bpf" --bpf-sdk ../../../../sdk/bpf --dump
-      "$cargo_test_bpf" --bpf-sdk ../../../../sdk/bpf
+      "$cargo_build_bpf" --dump
       popd
     fi
   done
-
-  # bpf-tools version
-  "$cargo_build_bpf" -V
 
   # BPF program instruction count assertion
   bpf_target_path=programs/bpf/target
@@ -115,19 +111,6 @@ test-local-cluster-flakey)
 test-local-cluster-slow)
   _ "$cargo" stable build --release --bins ${V:+--verbose}
   _ "$cargo" stable test --release --package solana-local-cluster --test local_cluster_slow ${V:+--verbose} -- --nocapture --test-threads=1
-  exit 0
-  ;;
-test-wasm)
-  _ node --version
-  _ npm --version
-  for dir in sdk/{program,}; do
-    if [[ -r "$dir"/package.json ]]; then
-      pushd "$dir"
-      _ npm install
-      _ npm test
-      popd
-    fi
-  done
   exit 0
   ;;
 *)

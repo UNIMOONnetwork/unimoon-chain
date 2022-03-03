@@ -1,5 +1,6 @@
 arrowParens: "avoid"
 bracketSpacing: false
+jsxBracketSameLine: false
 semi: true
 singleQuote: true
 tabWidth: 2

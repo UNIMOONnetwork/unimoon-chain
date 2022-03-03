@@ -1,9 +1,11 @@
 #![allow(clippy::integer_arithmetic)]
 use {
-    solana_entry::entry::Entry,
-    solana_ledger::shred::{
-        max_entries_per_n_shred, verify_test_data_shred, Shred, Shredder,
-        MAX_DATA_SHREDS_PER_FEC_BLOCK, SIZE_OF_DATA_SHRED_PAYLOAD,
+    solana_ledger::{
+        entry::Entry,
+        shred::{
+            max_entries_per_n_shred, verify_test_data_shred, Shred, Shredder,
+            MAX_DATA_SHREDS_PER_FEC_BLOCK, SIZE_OF_DATA_SHRED_PAYLOAD,
+        },
     },
     solana_sdk::{
         clock::Slot,
@@ -24,7 +26,7 @@ type IndexShredsMap = BTreeMap<u32, Vec<Shred>>;
 fn test_multi_fec_block_coding() {
     let keypair = Arc::new(Keypair::new());
     let slot = 0x1234_5678_9abc_def0;
-    let shredder = Shredder::new(slot, slot - 5, 0, 0).unwrap();
+    let shredder = Shredder::new(slot, slot - 5, keypair.clone(), 0, 0).unwrap();
     let num_fec_sets = 100;
     let num_data_shreds = (MAX_DATA_SHREDS_PER_FEC_BLOCK * num_fec_sets) as usize;
     let keypair0 = Keypair::new();
@@ -49,7 +51,7 @@ fn test_multi_fec_block_coding() {
 
     let serialized_entries = bincode::serialize(&entries).unwrap();
     let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
-        &keypair, &entries, true, // is_last_in_slot
+        &entries, true, // is_last_in_slot
         0,    // next_shred_index
         0,    // next_code_index
     );
@@ -186,7 +188,7 @@ fn setup_different_sized_fec_blocks(
     parent_slot: Slot,
     keypair: Arc<Keypair>,
 ) -> (IndexShredsMap, IndexShredsMap, usize) {
-    let shredder = Shredder::new(slot, parent_slot, 0, 0).unwrap();
+    let shredder = Shredder::new(slot, parent_slot, keypair, 0, 0).unwrap();
     let keypair0 = Keypair::new();
     let keypair1 = Keypair::new();
     let tx0 = system_transaction::transfer(&keypair0, &keypair1.pubkey(), 1, Hash::default());
@@ -223,7 +225,7 @@ fn setup_different_sized_fec_blocks(
     for i in 0..2 {
         let is_last = i == 1;
         let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
-            &keypair, &entries, is_last, next_index, // next_shred_index
+            &entries, is_last, next_index, // next_shred_index
             next_index, // next_code_index
         );
         for shred in &data_shreds {

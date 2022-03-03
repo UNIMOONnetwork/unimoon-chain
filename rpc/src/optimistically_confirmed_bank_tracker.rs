@@ -99,9 +99,9 @@ impl OptimisticallyConfirmedBankTracker {
         bank_forks: &Arc<RwLock<BankForks>>,
         optimistically_confirmed_bank: &Arc<RwLock<OptimisticallyConfirmedBank>>,
         subscriptions: &Arc<RpcSubscriptions>,
-        pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
-        last_notified_confirmed_slot: &mut Slot,
-        highest_confirmed_slot: &mut Slot,
+        mut pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
+        mut last_notified_confirmed_slot: &mut Slot,
+        mut highest_confirmed_slot: &mut Slot,
         bank_notification_subscribers: &Option<Arc<RwLock<Vec<BankNotificationSender>>>>,
     ) -> Result<(), RecvTimeoutError> {
         let notification = receiver.recv_timeout(Duration::from_secs(1))?;
@@ -110,9 +110,9 @@ impl OptimisticallyConfirmedBankTracker {
             bank_forks,
             optimistically_confirmed_bank,
             subscriptions,
-            pending_optimistically_confirmed_banks,
-            last_notified_confirmed_slot,
-            highest_confirmed_slot,
+            &mut pending_optimistically_confirmed_banks,
+            &mut last_notified_confirmed_slot,
+            &mut highest_confirmed_slot,
             bank_notification_subscribers,
         );
         Ok(())
@@ -169,8 +169,8 @@ impl OptimisticallyConfirmedBankTracker {
         bank_forks: &Arc<RwLock<BankForks>>,
         bank: &Arc<Bank>,
         slot_threshold: Slot,
-        last_notified_confirmed_slot: &mut Slot,
-        pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
+        mut last_notified_confirmed_slot: &mut Slot,
+        mut pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
         bank_notification_subscribers: &Option<Arc<RwLock<Vec<BankNotificationSender>>>>,
     ) {
         for confirmed_bank in bank.clone().parents_inclusive().iter().rev() {
@@ -183,8 +183,8 @@ impl OptimisticallyConfirmedBankTracker {
                     subscriptions,
                     bank_forks,
                     confirmed_bank,
-                    last_notified_confirmed_slot,
-                    pending_optimistically_confirmed_banks,
+                    &mut last_notified_confirmed_slot,
+                    &mut pending_optimistically_confirmed_banks,
                     bank_notification_subscribers,
                 );
             }
@@ -196,8 +196,8 @@ impl OptimisticallyConfirmedBankTracker {
         bank_forks: &Arc<RwLock<BankForks>>,
         optimistically_confirmed_bank: &Arc<RwLock<OptimisticallyConfirmedBank>>,
         subscriptions: &Arc<RpcSubscriptions>,
-        pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
-        last_notified_confirmed_slot: &mut Slot,
+        mut pending_optimistically_confirmed_banks: &mut HashSet<Slot>,
+        mut last_notified_confirmed_slot: &mut Slot,
         highest_confirmed_slot: &mut Slot,
         bank_notification_subscribers: &Option<Arc<RwLock<Vec<BankNotificationSender>>>>,
     ) {
@@ -219,8 +219,8 @@ impl OptimisticallyConfirmedBankTracker {
                             bank_forks,
                             bank,
                             *highest_confirmed_slot,
-                            last_notified_confirmed_slot,
-                            pending_optimistically_confirmed_banks,
+                            &mut last_notified_confirmed_slot,
+                            &mut pending_optimistically_confirmed_banks,
                             bank_notification_subscribers,
                         );
 
@@ -273,8 +273,8 @@ impl OptimisticallyConfirmedBankTracker {
                         bank_forks,
                         &bank,
                         *last_notified_confirmed_slot,
-                        last_notified_confirmed_slot,
-                        pending_optimistically_confirmed_banks,
+                        &mut last_notified_confirmed_slot,
+                        &mut pending_optimistically_confirmed_banks,
                         bank_notification_subscribers,
                     );
 
@@ -321,14 +321,13 @@ mod tests {
             accounts_background_service::AbsRequestSender, commitment::BlockCommitmentCache,
         },
         solana_sdk::pubkey::Pubkey,
-        std::sync::atomic::AtomicU64,
     };
 
     #[test]
     fn test_process_notification() {
         let exit = Arc::new(AtomicBool::new(false));
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100);
-        let bank = Bank::new_for_tests(&genesis_config);
+        let bank = Bank::new(&genesis_config);
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
         let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
@@ -344,10 +343,8 @@ mod tests {
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
 
         let block_commitment_cache = Arc::new(RwLock::new(BlockCommitmentCache::default()));
-        let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
         let subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
             &exit,
-            max_complete_transaction_status_slot,
             bank_forks.clone(),
             block_commitment_cache,
             optimistically_confirmed_bank.clone(),

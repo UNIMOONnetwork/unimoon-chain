@@ -25,53 +25,16 @@ use {
     solana_sdk::{
         clock::{Slot, UnixTimestamp},
         commitment_config::CommitmentConfig,
+        deserialize_utils::default_on_eof,
         instruction::CompiledInstruction,
-        message::{v0::LoadedAddresses, AccountKeys, Message, MessageHeader},
+        message::{Message, MessageHeader},
+        pubkey::Pubkey,
         sanitize::Sanitize,
         signature::Signature,
-        transaction::{Result, Transaction, TransactionError, VersionedTransaction},
+        transaction::{Result, Transaction, TransactionError},
     },
     std::fmt,
 };
-
-/// Represents types that can be encoded into one of several encoding formats
-pub trait Encodable {
-    type Encoded;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded;
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum UiTransactionEncoding {
-    Binary, // Legacy. Retained for RPC backwards compatibility
-    Base64,
-    Base58,
-    Json,
-    JsonParsed,
-}
-
-impl fmt::Display for UiTransactionEncoding {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let v = serde_json::to_value(self).map_err(|_| fmt::Error)?;
-        let s = v.as_str().ok_or(fmt::Error)?;
-        write!(f, "{}", s)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TransactionDetails {
-    Full,
-    Signatures,
-    None,
-}
-
-impl Default for TransactionDetails {
-    fn default() -> Self {
-        Self::Full
-    }
-}
-
 /// A duplicate representation of an Instruction for pretty JSON serialization
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", untagged)]
@@ -80,24 +43,24 @@ pub enum UiInstruction {
     Parsed(UiParsedInstruction),
 }
 
-impl UiInstruction {
-    fn parse(instruction: &CompiledInstruction, account_keys: &AccountKeys) -> Self {
-        let program_id = &account_keys[instruction.program_id_index as usize];
-        if let Ok(parsed_instruction) = parse(program_id, instruction, account_keys) {
-            UiInstruction::Parsed(UiParsedInstruction::Parsed(parsed_instruction))
-        } else {
-            UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(
-                UiPartiallyDecodedInstruction::from(instruction, account_keys),
-            ))
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum UiParsedInstruction {
     Parsed(ParsedInstruction),
     PartiallyDecoded(UiPartiallyDecodedInstruction),
+}
+
+impl UiInstruction {
+    fn parse(instruction: &CompiledInstruction, message: &Message) -> Self {
+        let program_id = instruction.program_id(&message.account_keys);
+        if let Ok(parsed_instruction) = parse(program_id, instruction, &message.account_keys) {
+            UiInstruction::Parsed(UiParsedInstruction::Parsed(parsed_instruction))
+        } else {
+            UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(
+                UiPartiallyDecodedInstruction::from(instruction, &message.account_keys),
+            ))
+        }
+    }
 }
 
 /// A duplicate representation of a CompiledInstruction for pretty JSON serialization
@@ -129,7 +92,7 @@ pub struct UiPartiallyDecodedInstruction {
 }
 
 impl UiPartiallyDecodedInstruction {
-    fn from(instruction: &CompiledInstruction, account_keys: &AccountKeys) -> Self {
+    fn from(instruction: &CompiledInstruction, account_keys: &[Pubkey]) -> Self {
         Self {
             program_id: account_keys[instruction.program_id_index as usize].to_string(),
             accounts: instruction
@@ -159,34 +122,7 @@ pub struct UiInnerInstructions {
     pub instructions: Vec<UiInstruction>,
 }
 
-impl UiInnerInstructions {
-    fn parse(inner_instructions: InnerInstructions, message: &Message) -> Self {
-        let account_keys = AccountKeys::new(&message.account_keys, None);
-        Self {
-            index: inner_instructions.index,
-            instructions: inner_instructions
-                .instructions
-                .iter()
-                .map(|ix| UiInstruction::parse(ix, &account_keys))
-                .collect(),
-        }
-    }
-}
-
-impl From<InnerInstructions> for UiInnerInstructions {
-    fn from(inner_instructions: InnerInstructions) -> Self {
-        Self {
-            index: inner_instructions.index,
-            instructions: inner_instructions
-                .instructions
-                .iter()
-                .map(|ix| UiInstruction::Compiled(ix.into()))
-                .collect(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransactionTokenBalance {
     pub account_index: u8,
     pub mint: String,
@@ -219,18 +155,49 @@ impl From<TransactionTokenBalance> for UiTransactionTokenBalance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl UiInnerInstructions {
+    fn parse(inner_instructions: InnerInstructions, message: &Message) -> Self {
+        Self {
+            index: inner_instructions.index,
+            instructions: inner_instructions
+                .instructions
+                .iter()
+                .map(|ix| UiInstruction::parse(ix, message))
+                .collect(),
+        }
+    }
+}
+
+impl From<InnerInstructions> for UiInnerInstructions {
+    fn from(inner_instructions: InnerInstructions) -> Self {
+        Self {
+            index: inner_instructions.index,
+            instructions: inner_instructions
+                .instructions
+                .iter()
+                .map(|ix| UiInstruction::Compiled(ix.into()))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TransactionStatusMeta {
     pub status: Result<()>,
     pub fee: u64,
     pub pre_balances: Vec<u64>,
     pub post_balances: Vec<u64>,
+    #[serde(deserialize_with = "default_on_eof")]
     pub inner_instructions: Option<Vec<InnerInstructions>>,
+    #[serde(deserialize_with = "default_on_eof")]
     pub log_messages: Option<Vec<String>>,
+    #[serde(deserialize_with = "default_on_eof")]
     pub pre_token_balances: Option<Vec<TransactionTokenBalance>>,
+    #[serde(deserialize_with = "default_on_eof")]
     pub post_token_balances: Option<Vec<TransactionTokenBalance>>,
+    #[serde(deserialize_with = "default_on_eof")]
     pub rewards: Option<Rewards>,
-    pub loaded_addresses: LoadedAddresses,
 }
 
 impl Default for TransactionStatusMeta {
@@ -245,7 +212,6 @@ impl Default for TransactionStatusMeta {
             pre_token_balances: None,
             post_token_balances: None,
             rewards: None,
-            loaded_addresses: LoadedAddresses::default(),
         }
     }
 }
@@ -282,10 +248,10 @@ impl UiTransactionStatusMeta {
             log_messages: meta.log_messages,
             pre_token_balances: meta
                 .pre_token_balances
-                .map(|balance| balance.into_iter().map(Into::into).collect()),
+                .map(|balance| balance.into_iter().map(|balance| balance.into()).collect()),
             post_token_balances: meta
                 .post_token_balances
-                .map(|balance| balance.into_iter().map(Into::into).collect()),
+                .map(|balance| balance.into_iter().map(|balance| balance.into()).collect()),
             rewards: meta.rewards,
         }
     }
@@ -301,14 +267,14 @@ impl From<TransactionStatusMeta> for UiTransactionStatusMeta {
             post_balances: meta.post_balances,
             inner_instructions: meta
                 .inner_instructions
-                .map(|ixs| ixs.into_iter().map(Into::into).collect()),
+                .map(|ixs| ixs.into_iter().map(|ix| ix.into()).collect()),
             log_messages: meta.log_messages,
             pre_token_balances: meta
                 .pre_token_balances
-                .map(|balance| balance.into_iter().map(Into::into).collect()),
+                .map(|balance| balance.into_iter().map(|balance| balance.into()).collect()),
             post_token_balances: meta
                 .post_token_balances
-                .map(|balance| balance.into_iter().map(Into::into).collect()),
+                .map(|balance| balance.into_iter().map(|balance| balance.into()).collect()),
             rewards: meta.rewards,
         }
     }
@@ -367,7 +333,8 @@ impl TransactionStatus {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfirmedTransactionStatusWithSignature {
     pub signature: Signature,
     pub slot: Slot,
@@ -393,59 +360,25 @@ pub struct ConfirmedBlock {
     pub previous_blockhash: String,
     pub blockhash: String,
     pub parent_slot: Slot,
-    pub transactions: Vec<TransactionWithStatusMeta>,
+    pub transactions: Vec<TransactionWithMetadata>,
     pub rewards: Rewards,
     pub block_time: Option<UnixTimestamp>,
     pub block_height: Option<u64>,
 }
 
-// Confirmed block with type guarantees that transaction metadata
-// is always present. Used for uploading to BigTable.
 #[derive(Clone, Debug, PartialEq)]
-pub struct VersionedConfirmedBlock {
+pub struct ConfirmedBlockWithOptionalMetadata {
     pub previous_blockhash: String,
     pub blockhash: String,
     pub parent_slot: Slot,
-    pub transactions: Vec<VersionedTransactionWithStatusMeta>,
+    pub transactions: Vec<TransactionWithOptionalMetadata>,
     pub rewards: Rewards,
     pub block_time: Option<UnixTimestamp>,
     pub block_height: Option<u64>,
 }
 
-// Confirmed block which only supports legacy transactions. Used
-// until migration to versioned transactions is completed.
-pub struct LegacyConfirmedBlock {
-    pub previous_blockhash: String,
-    pub blockhash: String,
-    pub parent_slot: Slot,
-    pub transactions: Vec<LegacyTransactionWithStatusMeta>,
-    pub rewards: Rewards,
-    pub block_time: Option<UnixTimestamp>,
-    pub block_height: Option<u64>,
-}
-
-impl ConfirmedBlock {
-    /// Downgrades a versioned block into a legacy block type
-    /// if it only contains legacy transactions
-    pub fn into_legacy_block(self) -> Option<LegacyConfirmedBlock> {
-        Some(LegacyConfirmedBlock {
-            previous_blockhash: self.previous_blockhash,
-            blockhash: self.blockhash,
-            parent_slot: self.parent_slot,
-            transactions: self
-                .transactions
-                .into_iter()
-                .map(|tx_with_meta| tx_with_meta.into_legacy_transaction_with_meta())
-                .collect::<Option<Vec<_>>>()?,
-            rewards: self.rewards,
-            block_time: self.block_time,
-            block_height: self.block_height,
-        })
-    }
-}
-
-impl From<VersionedConfirmedBlock> for ConfirmedBlock {
-    fn from(block: VersionedConfirmedBlock) -> Self {
+impl From<ConfirmedBlock> for ConfirmedBlockWithOptionalMetadata {
+    fn from(block: ConfirmedBlock) -> Self {
         Self {
             previous_blockhash: block.previous_blockhash,
             blockhash: block.blockhash,
@@ -453,7 +386,12 @@ impl From<VersionedConfirmedBlock> for ConfirmedBlock {
             transactions: block
                 .transactions
                 .into_iter()
-                .map(TransactionWithStatusMeta::Complete)
+                .map(|TransactionWithMetadata { transaction, meta }| {
+                    TransactionWithOptionalMetadata {
+                        transaction,
+                        meta: Some(meta),
+                    }
+                })
                 .collect(),
             rewards: block.rewards,
             block_time: block.block_time,
@@ -462,10 +400,9 @@ impl From<VersionedConfirmedBlock> for ConfirmedBlock {
     }
 }
 
-impl Encodable for LegacyConfirmedBlock {
-    type Encoded = EncodedConfirmedBlock;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded {
-        Self::Encoded {
+impl ConfirmedBlockWithOptionalMetadata {
+    pub fn encode(self, encoding: UiTransactionEncoding) -> EncodedConfirmedBlock {
+        EncodedConfirmedBlock {
             previous_blockhash: self.previous_blockhash,
             blockhash: self.blockhash,
             parent_slot: self.parent_slot,
@@ -479,9 +416,7 @@ impl Encodable for LegacyConfirmedBlock {
             block_height: self.block_height,
         }
     }
-}
 
-impl LegacyConfirmedBlock {
     pub fn configure(
         self,
         encoding: UiTransactionEncoding,
@@ -493,7 +428,7 @@ impl LegacyConfirmedBlock {
                 Some(
                     self.transactions
                         .into_iter()
-                        .map(|tx_with_meta| tx_with_meta.encode(encoding))
+                        .map(|tx| tx.encode(encoding))
                         .collect(),
                 ),
                 None,
@@ -538,20 +473,6 @@ pub struct EncodedConfirmedBlock {
     pub block_height: Option<u64>,
 }
 
-impl From<UiConfirmedBlock> for EncodedConfirmedBlock {
-    fn from(block: UiConfirmedBlock) -> Self {
-        Self {
-            previous_blockhash: block.previous_blockhash,
-            blockhash: block.blockhash,
-            parent_slot: block.parent_slot,
-            transactions: block.transactions.unwrap_or_default(),
-            rewards: block.rewards.unwrap_or_default(),
-            block_time: block.block_time,
-            block_height: block.block_height,
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiConfirmedBlock {
@@ -583,141 +504,149 @@ impl From<EncodedConfirmedBlock> for UiConfirmedBlock {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-#[allow(clippy::large_enum_variant)]
-pub enum TransactionWithStatusMeta {
-    // Very old transactions may be missing metadata
-    MissingMetadata(Transaction),
-    // Versioned stored transaction always have metadata
-    Complete(VersionedTransactionWithStatusMeta),
+impl From<UiConfirmedBlock> for EncodedConfirmedBlock {
+    fn from(block: UiConfirmedBlock) -> Self {
+        Self {
+            previous_blockhash: block.previous_blockhash,
+            blockhash: block.blockhash,
+            parent_slot: block.parent_slot,
+            transactions: block.transactions.unwrap_or_default(),
+            rewards: block.rewards.unwrap_or_default(),
+            block_time: block.block_time,
+            block_height: block.block_height,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionDetails {
+    Full,
+    Signatures,
+    None,
+}
+
+impl Default for TransactionDetails {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfirmedTransaction {
+    pub slot: Slot,
+    pub transaction: TransactionWithOptionalMetadata,
+    pub block_time: Option<UnixTimestamp>,
+}
+
+impl ConfirmedTransaction {
+    pub fn encode(self, encoding: UiTransactionEncoding) -> EncodedConfirmedTransaction {
+        EncodedConfirmedTransaction {
+            slot: self.slot,
+            transaction: self.transaction.encode(encoding),
+            block_time: self.block_time,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodedConfirmedTransaction {
+    pub slot: Slot,
+    #[serde(flatten)]
+    pub transaction: EncodedTransactionWithStatusMeta,
+    pub block_time: Option<UnixTimestamp>,
+}
+
+/// A duplicate representation of a Transaction for pretty JSON serialization
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiTransaction {
+    pub signatures: Vec<String>,
+    pub message: UiMessage,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", untagged)]
+pub enum UiMessage {
+    Parsed(UiParsedMessage),
+    Raw(UiRawMessage),
+}
+
+/// A duplicate representation of a Message, in raw format, for pretty JSON serialization
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRawMessage {
+    pub header: MessageHeader,
+    pub account_keys: Vec<String>,
+    pub recent_blockhash: String,
+    pub instructions: Vec<UiCompiledInstruction>,
+}
+
+/// A duplicate representation of a Message, in parsed format, for pretty JSON serialization
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiParsedMessage {
+    pub account_keys: Vec<ParsedAccount>,
+    pub recent_blockhash: String,
+    pub instructions: Vec<UiInstruction>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct VersionedTransactionWithStatusMeta {
-    pub transaction: VersionedTransaction,
-    pub meta: TransactionStatusMeta,
-}
-
-pub struct LegacyTransactionWithStatusMeta {
+pub struct TransactionWithOptionalMetadata {
     pub transaction: Transaction,
     pub meta: Option<TransactionStatusMeta>,
 }
 
-impl TransactionWithStatusMeta {
-    pub fn transaction_signature(&self) -> &Signature {
-        match self {
-            Self::MissingMetadata(transaction) => &transaction.signatures[0],
-            Self::Complete(VersionedTransactionWithStatusMeta { transaction, .. }) => {
-                &transaction.signatures[0]
-            }
-        }
-    }
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransactionWithMetadata {
+    pub transaction: Transaction,
+    pub meta: TransactionStatusMeta,
+}
 
-    pub fn into_legacy_transaction_with_meta(self) -> Option<LegacyTransactionWithStatusMeta> {
-        match self {
-            TransactionWithStatusMeta::MissingMetadata(transaction) => {
-                Some(LegacyTransactionWithStatusMeta {
-                    transaction,
-                    meta: None,
-                })
-            }
-            TransactionWithStatusMeta::Complete(tx_with_meta) => {
-                tx_with_meta.into_legacy_transaction_with_meta()
-            }
+impl TransactionWithOptionalMetadata {
+    fn encode(self, encoding: UiTransactionEncoding) -> EncodedTransactionWithStatusMeta {
+        let message = self.transaction.message();
+        let meta = self.meta.map(|meta| meta.encode(encoding, message));
+        EncodedTransactionWithStatusMeta {
+            transaction: EncodedTransaction::encode(self.transaction, encoding),
+            meta,
         }
     }
 }
 
-impl VersionedTransactionWithStatusMeta {
-    pub fn account_keys(&self) -> AccountKeys {
-        AccountKeys::new(
-            self.transaction.message.static_account_keys(),
-            Some(&self.meta.loaded_addresses),
-        )
-    }
-
-    pub fn into_legacy_transaction_with_meta(self) -> Option<LegacyTransactionWithStatusMeta> {
-        Some(LegacyTransactionWithStatusMeta {
-            transaction: self.transaction.into_legacy_transaction()?,
-            meta: Some(self.meta),
-        })
-    }
-}
-
-impl Encodable for LegacyTransactionWithStatusMeta {
-    type Encoded = EncodedTransactionWithStatusMeta;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded {
-        Self::Encoded {
-            transaction: self.transaction.encode(encoding),
-            meta: self.meta.map(|meta| match encoding {
-                UiTransactionEncoding::JsonParsed => {
-                    UiTransactionStatusMeta::parse(meta, &self.transaction.message)
-                }
-                _ => UiTransactionStatusMeta::from(meta),
-            }),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EncodedTransactionWithStatusMeta {
     pub transaction: EncodedTransaction,
     pub meta: Option<UiTransactionStatusMeta>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConfirmedTransactionWithStatusMeta {
-    pub slot: Slot,
-    pub tx_with_meta: TransactionWithStatusMeta,
-    pub block_time: Option<UnixTimestamp>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct VersionedConfirmedTransactionWithStatusMeta {
-    pub slot: Slot,
-    pub tx_with_meta: VersionedTransactionWithStatusMeta,
-    pub block_time: Option<UnixTimestamp>,
-}
-
-pub struct LegacyConfirmedTransactionWithStatusMeta {
-    pub slot: Slot,
-    pub tx_with_meta: LegacyTransactionWithStatusMeta,
-    pub block_time: Option<UnixTimestamp>,
-}
-
-impl Encodable for LegacyConfirmedTransactionWithStatusMeta {
-    type Encoded = EncodedConfirmedTransactionWithStatusMeta;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded {
-        Self::Encoded {
-            slot: self.slot,
-            transaction: self.tx_with_meta.encode(encoding),
-            block_time: self.block_time,
+impl TransactionStatusMeta {
+    fn encode(self, encoding: UiTransactionEncoding, message: &Message) -> UiTransactionStatusMeta {
+        match encoding {
+            UiTransactionEncoding::JsonParsed => UiTransactionStatusMeta::parse(self, message),
+            _ => self.into(),
         }
     }
 }
 
-impl ConfirmedTransactionWithStatusMeta {
-    /// Downgrades a versioned confirmed transaction into a legacy
-    /// confirmed transaction if it contains a legacy transaction.
-    pub fn into_legacy_confirmed_transaction(
-        self,
-    ) -> Option<LegacyConfirmedTransactionWithStatusMeta> {
-        Some(LegacyConfirmedTransactionWithStatusMeta {
-            tx_with_meta: self.tx_with_meta.into_legacy_transaction_with_meta()?,
-            block_time: self.block_time,
-            slot: self.slot,
-        })
-    }
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum UiTransactionEncoding {
+    Binary, // Legacy. Retained for RPC backwards compatibility
+    Base64,
+    Base58,
+    Json,
+    JsonParsed,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EncodedConfirmedTransactionWithStatusMeta {
-    pub slot: Slot,
-    #[serde(flatten)]
-    pub transaction: EncodedTransactionWithStatusMeta,
-    pub block_time: Option<UnixTimestamp>,
+impl fmt::Display for UiTransactionEncoding {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let v = serde_json::to_value(self).map_err(|_| fmt::Error)?;
+        let s = v.as_str().ok_or(fmt::Error)?;
+        write!(f, "{}", s)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -728,32 +657,63 @@ pub enum EncodedTransaction {
     Json(UiTransaction),
 }
 
-impl Encodable for &Transaction {
-    type Encoded = EncodedTransaction;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded {
+impl EncodedTransaction {
+    pub fn encode(transaction: Transaction, encoding: UiTransactionEncoding) -> Self {
         match encoding {
             UiTransactionEncoding::Binary => EncodedTransaction::LegacyBinary(
-                bs58::encode(bincode::serialize(self).unwrap()).into_string(),
+                bs58::encode(bincode::serialize(&transaction).unwrap()).into_string(),
             ),
             UiTransactionEncoding::Base58 => EncodedTransaction::Binary(
-                bs58::encode(bincode::serialize(self).unwrap()).into_string(),
+                bs58::encode(bincode::serialize(&transaction).unwrap()).into_string(),
                 encoding,
             ),
             UiTransactionEncoding::Base64 => EncodedTransaction::Binary(
-                base64::encode(bincode::serialize(self).unwrap()),
+                base64::encode(bincode::serialize(&transaction).unwrap()),
                 encoding,
             ),
             UiTransactionEncoding::Json | UiTransactionEncoding::JsonParsed => {
+                let message = if encoding == UiTransactionEncoding::Json {
+                    UiMessage::Raw(UiRawMessage {
+                        header: transaction.message.header,
+                        account_keys: transaction
+                            .message
+                            .account_keys
+                            .iter()
+                            .map(|pubkey| pubkey.to_string())
+                            .collect(),
+                        recent_blockhash: transaction.message.recent_blockhash.to_string(),
+                        instructions: transaction
+                            .message
+                            .instructions
+                            .iter()
+                            .map(|instruction| instruction.into())
+                            .collect(),
+                    })
+                } else {
+                    UiMessage::Parsed(UiParsedMessage {
+                        account_keys: parse_accounts(&transaction.message),
+                        recent_blockhash: transaction.message.recent_blockhash.to_string(),
+                        instructions: transaction
+                            .message
+                            .instructions
+                            .iter()
+                            .map(|instruction| {
+                                UiInstruction::parse(instruction, &transaction.message)
+                            })
+                            .collect(),
+                    })
+                };
                 EncodedTransaction::Json(UiTransaction {
-                    signatures: self.signatures.iter().map(ToString::to_string).collect(),
-                    message: self.message.encode(encoding),
+                    signatures: transaction
+                        .signatures
+                        .iter()
+                        .map(|sig| sig.to_string())
+                        .collect(),
+                    message,
                 })
             }
         }
     }
-}
-
-impl EncodedTransaction {
     pub fn decode(&self) -> Option<Transaction> {
         let transaction: Option<Transaction> = match self {
             EncodedTransaction::Json(_) => None,
@@ -776,65 +736,6 @@ impl EncodedTransaction {
         };
         transaction.filter(|transaction| transaction.sanitize().is_ok())
     }
-}
-
-/// A duplicate representation of a Transaction for pretty JSON serialization
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiTransaction {
-    pub signatures: Vec<String>,
-    pub message: UiMessage,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", untagged)]
-pub enum UiMessage {
-    Parsed(UiParsedMessage),
-    Raw(UiRawMessage),
-}
-
-impl Encodable for &Message {
-    type Encoded = UiMessage;
-    fn encode(self, encoding: UiTransactionEncoding) -> Self::Encoded {
-        if encoding == UiTransactionEncoding::JsonParsed {
-            let account_keys = AccountKeys::new(&self.account_keys, None);
-            UiMessage::Parsed(UiParsedMessage {
-                account_keys: parse_accounts(self),
-                recent_blockhash: self.recent_blockhash.to_string(),
-                instructions: self
-                    .instructions
-                    .iter()
-                    .map(|instruction| UiInstruction::parse(instruction, &account_keys))
-                    .collect(),
-            })
-        } else {
-            UiMessage::Raw(UiRawMessage {
-                header: self.header,
-                account_keys: self.account_keys.iter().map(ToString::to_string).collect(),
-                recent_blockhash: self.recent_blockhash.to_string(),
-                instructions: self.instructions.iter().map(Into::into).collect(),
-            })
-        }
-    }
-}
-
-/// A duplicate representation of a Message, in raw format, for pretty JSON serialization
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiRawMessage {
-    pub header: MessageHeader,
-    pub account_keys: Vec<String>,
-    pub recent_blockhash: String,
-    pub instructions: Vec<UiCompiledInstruction>,
-}
-
-/// A duplicate representation of a Message, in parsed format, for pretty JSON serialization
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UiParsedMessage {
-    pub account_keys: Vec<ParsedAccount>,
-    pub recent_blockhash: String,
-    pub instructions: Vec<UiInstruction>,
 }
 
 // A serialized `Vec<TransactionByAddrInfo>` is stored in the `tx-by-addr` table.  The row keys are

@@ -236,22 +236,6 @@ where
     is_parsable_generic::<Slot, _>(slot)
 }
 
-pub fn is_pow2<T>(bins: T) -> Result<(), String>
-where
-    T: AsRef<str> + Display,
-{
-    bins.as_ref()
-        .parse::<usize>()
-        .map_err(|e| format!("Unable to parse, provided: {}, err: {}", bins, e))
-        .and_then(|v| {
-            if !v.is_power_of_two() {
-                Err(format!("Must be a power of 2: {}", v))
-            } else {
-                Ok(())
-            }
-        })
-}
-
 pub fn is_port<T>(port: T) -> Result<(), String>
 where
     T: AsRef<str> + Display,
@@ -328,7 +312,7 @@ pub fn is_derivation<T>(value: T) -> Result<(), String>
 where
     T: AsRef<str> + Display,
 {
-    let value = value.as_ref().replace('\'', "");
+    let value = value.as_ref().replace("'", "");
     let mut parts = value.split('/');
     let account = parts.next().unwrap();
     account

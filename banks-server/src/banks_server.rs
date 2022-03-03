@@ -1,16 +1,14 @@
 use {
+    crate::send_transaction_service::{SendTransactionService, TransactionInfo},
     bincode::{deserialize, serialize},
-    crossbeam_channel::{unbounded, Receiver, Sender},
-    futures::{future, prelude::stream::StreamExt},
+    futures::{
+        future,
+        prelude::stream::{self, StreamExt},
+    },
     solana_banks_interface::{
-        Banks, BanksRequest, BanksResponse, BanksTransactionResultWithSimulation,
-        TransactionConfirmationStatus, TransactionSimulationDetails, TransactionStatus,
+        Banks, BanksRequest, BanksResponse, TransactionConfirmationStatus, TransactionStatus,
     },
-    solana_runtime::{
-        bank::{Bank, TransactionSimulationResult},
-        bank_forks::BankForks,
-        commitment::BlockCommitmentCache,
-    },
+    solana_runtime::{bank::Bank, bank_forks::BankForks, commitment::BlockCommitmentCache},
     solana_sdk::{
         account::Account,
         clock::Slot,
@@ -18,29 +16,26 @@ use {
         feature_set::FeatureSet,
         fee_calculator::FeeCalculator,
         hash::Hash,
-        message::{Message, SanitizedMessage},
         pubkey::Pubkey,
         signature::Signature,
-        transaction::{self, SanitizedTransaction, Transaction},
-    },
-    solana_send_transaction_service::{
-        send_transaction_service::{SendTransactionService, TransactionInfo},
-        tpu_info::NullTpuInfo,
+        transaction::{self, Transaction},
     },
     std::{
-        convert::TryFrom,
         io,
         net::{Ipv4Addr, SocketAddr},
-        sync::{Arc, RwLock},
+        sync::{
+            mpsc::{channel, Receiver, Sender},
+            Arc, RwLock,
+        },
         thread::Builder,
         time::Duration,
     },
     tarpc::{
         context::Context,
+        rpc::{transport::channel::UnboundedChannel, ClientMessage, Response},
         serde_transport::tcp,
-        server::{self, incoming::Incoming, Channel},
-        transport::{self, channel::UnboundedChannel},
-        ClientMessage, Response,
+        server::{self, Channel, Handler},
+        transport,
     },
     tokio::time::sleep,
     tokio_serde::formats::Bincode,
@@ -84,7 +79,7 @@ impl BanksServer {
                 .map(|info| deserialize(&info.wire_transaction).unwrap())
                 .collect();
             let bank = bank_forks.read().unwrap().working_bank();
-            let _ = bank.try_process_transactions(transactions.iter());
+            let _ = bank.process_transactions(&transactions);
         }
     }
 
@@ -94,7 +89,7 @@ impl BanksServer {
         block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
         poll_signature_status_sleep_duration: Duration,
     ) -> Self {
-        let (transaction_sender, transaction_receiver) = unbounded();
+        let (transaction_sender, transaction_receiver) = channel();
         let bank = bank_forks.read().unwrap().working_bank();
         let slot = bank.slot();
         {
@@ -177,8 +172,6 @@ impl Banks for BanksServer {
             signature,
             serialize(&transaction).unwrap(),
             last_valid_block_height,
-            None,
-            None,
         );
         self.transaction_sender.send(info).unwrap();
     }
@@ -189,16 +182,11 @@ impl Banks for BanksServer {
         commitment: CommitmentLevel,
     ) -> (FeeCalculator, Hash, u64) {
         let bank = self.bank(commitment);
-        let blockhash = bank.last_blockhash();
-        let lamports_per_signature = bank.get_lamports_per_signature();
+        let (blockhash, fee_calculator) = bank.last_blockhash_with_fee_calculator();
         let last_valid_block_height = bank
             .get_blockhash_last_valid_block_height(&blockhash)
             .unwrap();
-        (
-            FeeCalculator::new(lamports_per_signature),
-            blockhash,
-            last_valid_block_height,
-        )
+        (fee_calculator, blockhash, last_valid_block_height)
     }
 
     async fn get_transaction_status_with_context(
@@ -245,47 +233,6 @@ impl Banks for BanksServer {
         self.bank(commitment).block_height()
     }
 
-    async fn process_transaction_with_preflight_and_commitment_and_context(
-        self,
-        ctx: Context,
-        transaction: Transaction,
-        commitment: CommitmentLevel,
-    ) -> BanksTransactionResultWithSimulation {
-        let sanitized_transaction =
-            match SanitizedTransaction::try_from_legacy_transaction(transaction.clone()) {
-                Err(err) => {
-                    return BanksTransactionResultWithSimulation {
-                        result: Some(Err(err)),
-                        simulation_details: None,
-                    };
-                }
-                Ok(tx) => tx,
-            };
-        if let TransactionSimulationResult {
-            result: Err(err),
-            logs,
-            post_simulation_accounts: _,
-            units_consumed,
-        } = self
-            .bank(commitment)
-            .simulate_transaction_unchecked(sanitized_transaction)
-        {
-            return BanksTransactionResultWithSimulation {
-                result: Some(Err(err)),
-                simulation_details: Some(TransactionSimulationDetails {
-                    logs,
-                    units_consumed,
-                }),
-            };
-        }
-        BanksTransactionResultWithSimulation {
-            result: self
-                .process_transaction_with_commitment_and_context(ctx, transaction, commitment)
-                .await,
-            simulation_details: None,
-        }
-    }
-
     async fn process_transaction_with_commitment_and_context(
         self,
         _: Context,
@@ -306,8 +253,6 @@ impl Banks for BanksServer {
             signature,
             serialize(&transaction).unwrap(),
             last_valid_block_height,
-            None,
-            None,
         );
         self.transaction_sender.send(info).unwrap();
         self.poll_signature_status(&signature, blockhash, last_valid_block_height, commitment)
@@ -323,33 +268,6 @@ impl Banks for BanksServer {
         let bank = self.bank(commitment);
         bank.get_account(&address).map(Account::from)
     }
-
-    async fn get_latest_blockhash_with_context(self, _: Context) -> Hash {
-        let bank = self.bank(CommitmentLevel::default());
-        bank.last_blockhash()
-    }
-
-    async fn get_latest_blockhash_with_commitment_and_context(
-        self,
-        _: Context,
-        commitment: CommitmentLevel,
-    ) -> Option<(Hash, u64)> {
-        let bank = self.bank(commitment);
-        let blockhash = bank.last_blockhash();
-        let last_valid_block_height = bank.get_blockhash_last_valid_block_height(&blockhash)?;
-        Some((blockhash, last_valid_block_height))
-    }
-
-    async fn get_fee_for_message_with_commitment_and_context(
-        self,
-        _: Context,
-        commitment: CommitmentLevel,
-        message: Message,
-    ) -> Option<u64> {
-        let bank = self.bank(commitment);
-        let sanitized_message = SanitizedMessage::try_from(message).ok()?;
-        bank.get_fee_for_message(&sanitized_message)
-    }
 }
 
 pub async fn start_local_server(
@@ -363,7 +281,9 @@ pub async fn start_local_server(
         poll_signature_status_sleep_duration,
     );
     let (client_transport, server_transport) = transport::channel::unbounded();
-    let server = server::BaseChannel::with_defaults(server_transport).execute(banks_server.serve());
+    let server = server::new(server::Config::default())
+        .incoming(stream::once(future::ready(server_transport)))
+        .respond_with(banks_server.serve());
     tokio::spawn(server);
     client_transport
 }
@@ -390,16 +310,9 @@ pub async fn start_tcp_server(
         // serve is generated by the service attribute. It takes as input any type implementing
         // the generated Banks trait.
         .map(move |chan| {
-            let (sender, receiver) = unbounded();
+            let (sender, receiver) = channel();
 
-            SendTransactionService::new::<NullTpuInfo>(
-                tpu_addr,
-                &bank_forks,
-                None,
-                receiver,
-                5_000,
-                0,
-            );
+            SendTransactionService::new(tpu_addr, &bank_forks, receiver);
 
             let server = BanksServer::new(
                 bank_forks.clone(),
@@ -407,7 +320,7 @@ pub async fn start_tcp_server(
                 sender,
                 Duration::from_millis(200),
             );
-            chan.execute(server.serve())
+            chan.respond_with(server.serve()).execute()
         })
         // Max 10 channels.
         .buffer_unordered(10)

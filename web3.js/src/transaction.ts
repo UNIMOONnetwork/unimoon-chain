@@ -1,3 +1,4 @@
+import invariant from 'assert';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import {Buffer} from 'buffer';
@@ -6,7 +7,6 @@ import {Message} from './message';
 import {PublicKey} from './publickey';
 import * as shortvec from './util/shortvec-encoding';
 import {toBuffer} from './util/to-buffer';
-import invariant from './util/assert';
 import type {Signer} from './keypair';
 import type {Blockhash} from './blockhash';
 import type {CompiledInstruction} from './message';
@@ -106,7 +106,7 @@ export type SignaturePubkeyPair = {
  * List of Transaction object fields that may be initialized at construction
  *
  */
-export type TransactionCtorFields = {
+type TransactionCtorFields = {
   /** A recent blockhash */
   recentBlockhash?: Blockhash | null;
   /** Optional nonce information used for offline nonce'd transactions */
@@ -120,7 +120,7 @@ export type TransactionCtorFields = {
 /**
  * Nonce information to be used to build an offline Transaction.
  */
-export type NonceInformation = {
+type NonceInformation = {
   /** The current blockhash stored in the nonce */
   nonce: Blockhash;
   /** AdvanceNonceAccount Instruction */
@@ -214,7 +214,7 @@ export class Transaction {
     }
 
     if (this.instructions.length < 1) {
-      console.warn('No instructions provided');
+      throw new Error('No instructions provided');
     }
 
     let feePayer: PublicKey;
@@ -259,12 +259,9 @@ export class Transaction {
 
     // Sort. Prioritizing first by signer, then by writable
     accountMetas.sort(function (x, y) {
-      const pubkeySorting = x.pubkey
-        .toBase58()
-        .localeCompare(y.pubkey.toBase58());
       const checkSigner = x.isSigner === y.isSigner ? 0 : x.isSigner ? -1 : 1;
       const checkWritable =
-        x.isWritable === y.isWritable ? pubkeySorting : x.isWritable ? -1 : 1;
+        x.isWritable === y.isWritable ? 0 : x.isWritable ? -1 : 1;
       return checkSigner || checkWritable;
     });
 
@@ -669,10 +666,7 @@ export class Transaction {
   /**
    * Populate Transaction object from message and signatures
    */
-  static populate(
-    message: Message,
-    signatures: Array<string> = [],
-  ): Transaction {
+  static populate(message: Message, signatures: Array<string>): Transaction {
     const transaction = new Transaction();
     transaction.recentBlockhash = message.recentBlockhash;
     if (message.header.numRequiredSignatures > 0) {
@@ -694,10 +688,9 @@ export class Transaction {
         const pubkey = message.accountKeys[account];
         return {
           pubkey,
-          isSigner:
-            transaction.signatures.some(
-              keyObj => keyObj.publicKey.toString() === pubkey.toString(),
-            ) || message.isAccountSigner(account),
+          isSigner: transaction.signatures.some(
+            keyObj => keyObj.publicKey.toString() === pubkey.toString(),
+          ),
           isWritable: message.isAccountWritable(account),
         };
       });

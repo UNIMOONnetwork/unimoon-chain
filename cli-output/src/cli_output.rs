@@ -101,7 +101,7 @@ impl OutputFormat {
 pub struct CliAccount {
     #[serde(flatten)]
     pub keyed_account: RpcKeyedAccount,
-    #[serde(skip_serializing, skip_deserializing)]
+    #[serde(skip_serializing)]
     pub use_lamports_unit: bool,
 }
 
@@ -318,10 +318,10 @@ impl fmt::Display for CliEpochInfo {
             "Epoch Completed Time:",
             &format!(
                 "{}{}/{} ({} remaining)",
-                humantime::format_duration(time_elapsed),
+                humantime::format_duration(time_elapsed).to_string(),
                 if annotation.is_some() { "*" } else { "" },
-                humantime::format_duration(time_elapsed + time_remaining),
-                humantime::format_duration(time_remaining),
+                humantime::format_duration(time_elapsed + time_remaining).to_string(),
+                humantime::format_duration(time_remaining).to_string(),
             ),
         )?;
         if let Some(annotation) = annotation {
@@ -393,19 +393,19 @@ impl fmt::Display for CliValidators {
         ) -> fmt::Result {
             fn non_zero_or_dash(v: u64, max_v: u64) -> String {
                 if v == 0 {
-                    "        -      ".into()
+                    "-         ".into()
                 } else if v == max_v {
-                    format!("{:>9} (  0)", v)
+                    format!("{:>8} (  0)", v)
                 } else if v > max_v.saturating_sub(100) {
-                    format!("{:>9} ({:>3})", v, -(max_v.saturating_sub(v) as isize))
+                    format!("{:>8} ({:>3})", v, -(max_v.saturating_sub(v) as isize))
                 } else {
-                    format!("{:>9}      ", v)
+                    format!("{:>8}      ", v)
                 }
             }
 
             writeln!(
                 f,
-                "{} {:<44}  {:<44}  {:>3}%  {:>14}  {:>14} {:>7} {:>8}  {:>7}  {:>22} ({:.2}%)",
+                "{} {:<44}  {:<44}  {:>3}%  {:>14}  {:>14} {:>7} {:>8}  {:>7}  {}",
                 if validator.delinquent {
                     WARNING.to_string()
                 } else {
@@ -419,19 +419,19 @@ impl fmt::Display for CliValidators {
                 if let Some(skip_rate) = validator.skip_rate {
                     format!("{:.2}%", skip_rate)
                 } else {
-                    "-   ".to_string()
+                    "- ".to_string()
                 },
                 validator.epoch_credits,
                 validator.version,
-                build_balance_message_with_config(
-                    validator.activated_stake,
-                    &BuildBalanceMessageConfig {
-                        use_lamports_unit,
-                        trim_trailing_zeros: false,
-                        ..BuildBalanceMessageConfig::default()
-                    }
-                ),
-                100. * validator.activated_stake as f64 / total_active_stake as f64,
+                if validator.activated_stake > 0 {
+                    format!(
+                        "{} ({:.2}%)",
+                        build_balance_message(validator.activated_stake, use_lamports_unit, true),
+                        100. * validator.activated_stake as f64 / total_active_stake as f64,
+                    )
+                } else {
+                    "-".into()
+                },
             )
         }
 
@@ -441,13 +441,13 @@ impl fmt::Display for CliValidators {
             0
         };
         let header = style(format!(
-            "{:padding$} {:<44}  {:<38}  {}  {}  {} {}  {}  {}    {}",
+            "{:padding$} {:<44}  {:<38}  {}  {}  {} {}  {}  {}  {}",
             " ",
             "Identity",
             "Vote Account",
             "Commission",
-            "Last Vote      ",
-            "Root Slot    ",
+            "Last Vote     ",
+            "Root Slot   ",
             "Skip Rate",
             "Credits",
             "Version",
@@ -2287,7 +2287,6 @@ impl fmt::Display for CliBlock {
                 let sign = if reward.lamports < 0 { "-" } else { "" };
 
                 total_rewards += reward.lamports;
-                #[allow(clippy::format_in_format_args)]
                 writeln!(
                     f,
                     "  {:<44}  {:^15}  {:>15}  {}  {}",
@@ -2451,8 +2450,6 @@ pub struct CliGossipNode {
     pub rpc_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub feature_set: Option<u32>,
 }
 
 impl CliGossipNode {
@@ -2465,7 +2462,6 @@ impl CliGossipNode {
             tpu_port: info.tpu.map(|addr| addr.port()),
             rpc_host: info.rpc.map(|addr| addr.to_string()),
             version: info.version,
-            feature_set: info.feature_set,
         }
     }
 }
@@ -2491,7 +2487,7 @@ impl fmt::Display for CliGossipNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{:15} | {:44} | {:6} | {:5} | {:21} | {:8}| {}",
+            "{:15} | {:44} | {:6} | {:5} | {:21} | {}",
             unwrap_to_string_or_none(self.ip_address.as_ref()),
             self.identity_label
                 .as_ref()
@@ -2500,7 +2496,6 @@ impl fmt::Display for CliGossipNode {
             unwrap_to_string_or_none(self.tpu_port.as_ref()),
             unwrap_to_string_or_none(self.rpc_host.as_ref()),
             unwrap_to_string_or_default(self.version.as_ref(), "unknown"),
-            unwrap_to_string_or_default(self.feature_set.as_ref(), "unknown"),
         )
     }
 }
@@ -2515,10 +2510,10 @@ impl fmt::Display for CliGossipNodes {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(
             f,
-            "IP Address      | Identity                                     \
-             | Gossip | TPU   | RPC Address           | Version | Feature Set\n\
+            "IP Address      | Node identifier                              \
+             | Gossip | TPU   | RPC Address           | Version\n\
              ----------------+----------------------------------------------+\
-             --------+-------+-----------------------+---------+----------------",
+             --------+-------+-----------------------+----------------",
         )?;
         for node in self.0.iter() {
             writeln!(f, "{}", node)?;
@@ -2768,7 +2763,11 @@ mod tests {
             CliSignOnlyData {
                 blockhash: blockhash.to_string(),
                 message: None,
-                signers: vec![format!("{}={}", present.pubkey(), tx.signatures[1])],
+                signers: vec![format!(
+                    "{}={}",
+                    present.pubkey().to_string(),
+                    tx.signatures[1]
+                )],
                 absent: vec![absent.pubkey().to_string()],
                 bad_sig: vec![bad.pubkey().to_string()],
             }
@@ -2798,7 +2797,11 @@ mod tests {
             CliSignOnlyData {
                 blockhash: blockhash.to_string(),
                 message: Some(expected_msg),
-                signers: vec![format!("{}={}", present.pubkey(), tx.signatures[1])],
+                signers: vec![format!(
+                    "{}={}",
+                    present.pubkey().to_string(),
+                    tx.signatures[1]
+                )],
                 absent: vec![absent.pubkey().to_string()],
                 bad_sig: vec![bad.pubkey().to_string()],
             }

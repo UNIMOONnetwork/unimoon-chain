@@ -19,23 +19,23 @@ $ source $HOME/.cargo/env
 $ rustup component add rustfmt
 ```
 
-When building the master branch, please make sure you are using the latest stable rust version by running:
+Please make sure you are always using the latest stable rust version by running:
 
 ```bash
 $ rustup update
 ```
-
-When building a specific release branch, you should check the rust version in `ci/rust-version.sh` and if necessary, install that version by running:
-```bash
-$ rustup install VERSION
-```
-Note that if this is not the latest rust version on your machine, cargo commands may require an [override](https://rust-lang.github.io/rustup/overrides.html) in order to use the correct version.
 
 On Linux systems you may need to install libssl-dev, pkg-config, zlib1g-dev, etc.  On Ubuntu:
 
 ```bash
 $ sudo apt-get update
 $ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang make
+```
+
+On Mac M1s, make sure you set up your terminal & homebrew [to use](https://5balloons.info/correct-way-to-install-and-use-homebrew-on-m1-macs/) Rosetta. You can install it with:
+
+```bash
+$ softwareupdate --install-rosetta
 ```
 
 ## **2. Download the source code.**
@@ -68,7 +68,7 @@ devnet.solana.com. Runs 24/7. Learn more about the [public clusters](https://doc
 
 # Benchmarking
 
-First, install the nightly build of rustc. `cargo bench` requires the use of the
+First install the nightly build of rustc. `cargo bench` requires use of the
 unstable features only available in the nightly build.
 
 ```bash
@@ -110,17 +110,17 @@ send us that patch!
 
 All claims, content, designs, algorithms, estimates, roadmaps,
 specifications, and performance measurements described in this project
-are done with the Solana Foundation's ("SF") good faith efforts. It is up to
+are done with the Solana Foundation's ("SF") best efforts. It is up to
 the reader to check and validate their accuracy and truthfulness.
-Furthermore, nothing in this project constitutes a solicitation for
+Furthermore nothing in this project constitutes a solicitation for
 investment.
 
-Any content produced by SF or developer resources that SF provides are
-for educational and inspirational purposes only. SF does not encourage,
+Any content produced by SF or developer resources that SF provides, are
+for educational and inspiration purposes only. SF does not encourage,
 induce or sanction the deployment, integration or use of any such
 applications (including the code comprising the Solana blockchain
 protocol) in violation of applicable laws or regulations and hereby
-prohibits any such deployment, integration or use. This includes the use of
+prohibits any such deployment, integration or use. This includes use of
 any such applications by the reader (a) in violation of export control
 or sanctions laws of the United States or any other applicable
 jurisdiction, (b) if the reader is located in or ordinarily resident in
@@ -133,7 +133,7 @@ prohibitions.
 The reader should be aware that U.S. export control and sanctions laws
 prohibit U.S. persons (and other persons that are subject to such laws)
 from transacting with persons in certain countries and territories or
-that are on the SDN list. As a project-based primarily on open-source
+that are on the SDN list. As a project based primarily on open-source
 software, it is possible that such sanctioned persons may nevertheless
 bypass prohibitions, obtain the code comprising the Solana blockchain
 protocol (or other project code or applications) and deploy, integrate,

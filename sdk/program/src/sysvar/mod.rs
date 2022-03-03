@@ -1,9 +1,7 @@
 //! named accounts for synthesized data accounts for bank state, etc.
 //!
-use {
-    crate::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey},
-    lazy_static::lazy_static,
-};
+use crate::{account_info::AccountInfo, program_error::ProgramError, pubkey::Pubkey};
+use lazy_static::lazy_static;
 
 pub mod clock;
 pub mod epoch_schedule;
@@ -55,32 +53,9 @@ macro_rules! declare_sysvar_id(
         #[cfg(test)]
         #[test]
         fn test_sysvar_id() {
-            assert!($crate::sysvar::is_sysvar_id(&id()), "sysvar::is_sysvar_id() doesn't know about {}", $name);
-        }
-    )
-);
-
-#[macro_export]
-macro_rules! declare_deprecated_sysvar_id(
-    ($name:expr, $type:ty) => (
-        $crate::declare_deprecated_id!($name);
-
-        impl $crate::sysvar::SysvarId for $type {
-            fn id() -> $crate::pubkey::Pubkey {
-                #[allow(deprecated)]
-                id()
+            if !$crate::sysvar::is_sysvar_id(&id()) {
+                panic!("sysvar::is_sysvar_id() doesn't know about {}", $name);
             }
-
-            fn check_id(pubkey: &$crate::pubkey::Pubkey) -> bool {
-                #[allow(deprecated)]
-                check_id(pubkey)
-            }
-        }
-
-        #[cfg(test)]
-        #[test]
-        fn test_sysvar_id() {
-            assert!($crate::sysvar::is_sysvar_id(&id()), "sysvar::is_sysvar_id() doesn't know about {}", $name);
         }
     )
 );

@@ -1,5 +1,4 @@
-import * as BufferLayout from '@solana/buffer-layout';
-import type {Buffer} from 'buffer';
+import * as BufferLayout from 'buffer-layout';
 
 import * as Layout from './layout';
 import {PublicKey} from './publickey';
@@ -23,22 +22,6 @@ export type EpochCredits = {
   prevCredits: number;
 };
 
-export type AuthorizedVoter = {
-  epoch: number;
-  authorizedVoter: PublicKey;
-};
-
-export type PriorVoter = {
-  authorizedPubkey: PublicKey;
-  epochOfLastAuthorizedSwitch: number;
-  targetEpoch: number;
-};
-
-export type BlockTimestamp = {
-  slot: number;
-  timetamp: number;
-};
-
 /**
  * See https://github.com/solana-labs/solana/blob/8a12ed029cfa38d4a45400916c2463fb82bbec8c/programs/vote_api/src/vote_state.rs#L68-L88
  *
@@ -46,7 +29,8 @@ export type BlockTimestamp = {
  */
 const VoteAccountLayout = BufferLayout.struct([
   Layout.publicKey('nodePubkey'),
-  Layout.publicKey('authorizedWithdrawer'),
+  Layout.publicKey('authorizedVoterPubkey'),
+  Layout.publicKey('authorizedWithdrawerPubkey'),
   BufferLayout.u8('commission'),
   BufferLayout.nu64(), // votes.length
   BufferLayout.seq(
@@ -59,31 +43,9 @@ const VoteAccountLayout = BufferLayout.struct([
   ),
   BufferLayout.u8('rootSlotValid'),
   BufferLayout.nu64('rootSlot'),
-  BufferLayout.nu64(), // authorizedVoters.length
-  BufferLayout.seq(
-    BufferLayout.struct([
-      BufferLayout.nu64('epoch'),
-      Layout.publicKey('authorizedVoter'),
-    ]),
-    BufferLayout.offset(BufferLayout.u32(), -8),
-    'authorizedVoters',
-  ),
-  BufferLayout.struct(
-    [
-      BufferLayout.seq(
-        BufferLayout.struct([
-          Layout.publicKey('authorizedPubkey'),
-          BufferLayout.nu64('epochOfLastAuthorizedSwitch'),
-          BufferLayout.nu64('targetEpoch'),
-        ]),
-        32,
-        'buf',
-      ),
-      BufferLayout.nu64('idx'),
-      BufferLayout.u8('isEmpty'),
-    ],
-    'priorVoters',
-  ),
+  BufferLayout.nu64('epoch'),
+  BufferLayout.nu64('credits'),
+  BufferLayout.nu64('lastEpochCredits'),
   BufferLayout.nu64(), // epochCredits.length
   BufferLayout.seq(
     BufferLayout.struct([
@@ -94,22 +56,19 @@ const VoteAccountLayout = BufferLayout.struct([
     BufferLayout.offset(BufferLayout.u32(), -8),
     'epochCredits',
   ),
-  BufferLayout.struct(
-    [BufferLayout.nu64('slot'), BufferLayout.nu64('timestamp')],
-    'lastTimestamp',
-  ),
 ]);
 
 type VoteAccountArgs = {
   nodePubkey: PublicKey;
-  authorizedWithdrawer: PublicKey;
+  authorizedVoterPubkey: PublicKey;
+  authorizedWithdrawerPubkey: PublicKey;
   commission: number;
+  votes: Array<Lockout>;
   rootSlot: number | null;
-  votes: Lockout[];
-  authorizedVoters: AuthorizedVoter[];
-  priorVoters: PriorVoter[];
-  epochCredits: EpochCredits[];
-  lastTimestamp: BlockTimestamp;
+  epoch: number;
+  credits: number;
+  lastEpochCredits: number;
+  epochCredits: Array<EpochCredits>;
 };
 
 /**
@@ -117,28 +76,30 @@ type VoteAccountArgs = {
  */
 export class VoteAccount {
   nodePubkey: PublicKey;
-  authorizedWithdrawer: PublicKey;
+  authorizedVoterPubkey: PublicKey;
+  authorizedWithdrawerPubkey: PublicKey;
   commission: number;
+  votes: Array<Lockout>;
   rootSlot: number | null;
-  votes: Lockout[];
-  authorizedVoters: AuthorizedVoter[];
-  priorVoters: PriorVoter[];
-  epochCredits: EpochCredits[];
-  lastTimestamp: BlockTimestamp;
+  epoch: number;
+  credits: number;
+  lastEpochCredits: number;
+  epochCredits: Array<EpochCredits>;
 
   /**
    * @internal
    */
   constructor(args: VoteAccountArgs) {
     this.nodePubkey = args.nodePubkey;
-    this.authorizedWithdrawer = args.authorizedWithdrawer;
+    this.authorizedVoterPubkey = args.authorizedVoterPubkey;
+    this.authorizedWithdrawerPubkey = args.authorizedWithdrawerPubkey;
     this.commission = args.commission;
-    this.rootSlot = args.rootSlot;
     this.votes = args.votes;
-    this.authorizedVoters = args.authorizedVoters;
-    this.priorVoters = args.priorVoters;
+    this.rootSlot = args.rootSlot;
+    this.epoch = args.epoch;
+    this.credits = args.credits;
+    this.lastEpochCredits = args.lastEpochCredits;
     this.epochCredits = args.epochCredits;
-    this.lastTimestamp = args.lastTimestamp;
   }
 
   /**
@@ -150,8 +111,7 @@ export class VoteAccount {
   static fromAccountData(
     buffer: Buffer | Uint8Array | Array<number>,
   ): VoteAccount {
-    const versionOffset = 4;
-    const va = VoteAccountLayout.decode(toBuffer(buffer), versionOffset);
+    const va = VoteAccountLayout.decode(toBuffer(buffer), 0);
 
     let rootSlot: number | null = va.rootSlot;
     if (!va.rootSlotValid) {
@@ -160,49 +120,15 @@ export class VoteAccount {
 
     return new VoteAccount({
       nodePubkey: new PublicKey(va.nodePubkey),
-      authorizedWithdrawer: new PublicKey(va.authorizedWithdrawer),
+      authorizedVoterPubkey: new PublicKey(va.authorizedVoterPubkey),
+      authorizedWithdrawerPubkey: new PublicKey(va.authorizedWithdrawerPubkey),
       commission: va.commission,
       votes: va.votes,
       rootSlot,
-      authorizedVoters: va.authorizedVoters.map(parseAuthorizedVoter),
-      priorVoters: getPriorVoters(va.priorVoters),
+      epoch: va.epoch,
+      credits: va.credits,
+      lastEpochCredits: va.lastEpochCredits,
       epochCredits: va.epochCredits,
-      lastTimestamp: va.lastTimestamp,
     });
   }
-}
-
-function parseAuthorizedVoter({epoch, authorizedVoter}: AuthorizedVoter) {
-  return {
-    epoch,
-    authorizedVoter: new PublicKey(authorizedVoter),
-  };
-}
-
-function parsePriorVoters({
-  authorizedPubkey,
-  epochOfLastAuthorizedSwitch,
-  targetEpoch,
-}: PriorVoter) {
-  return {
-    authorizedPubkey: new PublicKey(authorizedPubkey),
-    epochOfLastAuthorizedSwitch,
-    targetEpoch,
-  };
-}
-
-function getPriorVoters({
-  buf,
-  idx,
-  isEmpty,
-}: {
-  buf: PriorVoter[];
-  idx: number;
-  isEmpty: boolean;
-}): PriorVoter[] {
-  if (isEmpty) {
-    return [];
-  }
-
-  return [...buf.slice(idx + 1).map(parsePriorVoters), ...buf.slice(0, idx)];
 }

@@ -1,4 +1,4 @@
-import nacl from 'tweetnacl';
+import * as nacl from 'tweetnacl';
 
 import {PublicKey} from './publickey';
 

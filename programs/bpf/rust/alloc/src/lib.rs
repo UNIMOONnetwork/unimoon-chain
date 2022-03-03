@@ -2,10 +2,8 @@
 
 #[macro_use]
 extern crate alloc;
-use {
-    solana_program::{custom_panic_default, entrypoint::SUCCESS, log::sol_log_64, msg},
-    std::{alloc::Layout, mem},
-};
+use solana_program::{custom_panic_default, entrypoint::SUCCESS, msg};
+use std::{alloc::Layout, mem};
 
 #[no_mangle]
 pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {
@@ -48,7 +46,7 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {
         for i in 0..ITERS {
             assert_eq!(*ptr.add(i as usize), i as u8);
         }
-        sol_log_64(0x3, 0, 0, 0, u64::from(*ptr.add(42)));
+        msg!(0x3, 0, 0, 0, u64::from(*ptr.add(42)));
         assert_eq!(*ptr.add(42), 42);
         alloc::alloc::dealloc(ptr, layout);
     }
@@ -63,7 +61,7 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {
         for v in ones.iter() {
             sum += ones[*v];
         }
-        sol_log_64(0x0, 0, 0, 0, sum as u64);
+        msg!(0x0, 0, 0, 0, sum as u64);
         assert_eq!(sum, ITERS);
     }
 
@@ -76,7 +74,7 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {
         for i in 0..ITERS {
             v.push(i);
         }
-        sol_log_64(0x4, 0, 0, 0, v.len() as u64);
+        msg!(0x4, 0, 0, 0, v.len() as u64);
         assert_eq!(v.len(), ITERS);
     }
 

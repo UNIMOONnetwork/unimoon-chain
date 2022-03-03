@@ -12,13 +12,13 @@ use {
     },
 };
 
-pub struct SelectVoteAndResetForkResult {
+pub(crate) struct SelectVoteAndResetForkResult {
     pub vote_bank: Option<(Arc<Bank>, SwitchForkDecision)>,
     pub reset_bank: Option<Arc<Bank>>,
     pub heaviest_fork_failures: Vec<HeaviestForkFailures>,
 }
 
-pub trait ForkChoice {
+pub(crate) trait ForkChoice {
     type ForkChoiceKey;
     fn compute_bank_stats(
         &mut self,
@@ -42,10 +42,5 @@ pub trait ForkChoice {
 
     fn mark_fork_invalid_candidate(&mut self, invalid_slot: &Self::ForkChoiceKey);
 
-    /// Returns any newly duplicate confirmed ancestors of `valid_slot` up to and including
-    /// `valid_slot` itself
-    fn mark_fork_valid_candidate(
-        &mut self,
-        valid_slot: &Self::ForkChoiceKey,
-    ) -> Vec<Self::ForkChoiceKey>;
+    fn mark_fork_valid_candidate(&mut self, valid_slot: &Self::ForkChoiceKey);
 }

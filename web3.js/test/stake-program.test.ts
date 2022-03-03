@@ -220,61 +220,6 @@ describe('StakeProgram', () => {
     expect(params).to.eql(StakeInstruction.decodeSplit(stakeInstruction));
   });
 
-  it('splitWithSeed', async () => {
-    const stakePubkey = Keypair.generate().publicKey;
-    const authorizedPubkey = Keypair.generate().publicKey;
-    const lamports = 123;
-    const seed = 'test string';
-    const basePubkey = Keypair.generate().publicKey;
-    const splitStakePubkey = await PublicKey.createWithSeed(
-      basePubkey,
-      seed,
-      StakeProgram.programId,
-    );
-    const transaction = StakeProgram.splitWithSeed({
-      stakePubkey,
-      authorizedPubkey,
-      lamports,
-      splitStakePubkey,
-      basePubkey,
-      seed,
-    });
-    expect(transaction.instructions).to.have.length(2);
-    const [systemInstruction, stakeInstruction] = transaction.instructions;
-    const systemParams = {
-      accountPubkey: splitStakePubkey,
-      basePubkey,
-      seed,
-      space: StakeProgram.space,
-      programId: StakeProgram.programId,
-    };
-    expect(systemParams).to.eql(
-      SystemInstruction.decodeAllocateWithSeed(systemInstruction),
-    );
-    const splitParams = {
-      stakePubkey,
-      authorizedPubkey,
-      splitStakePubkey,
-      lamports,
-    };
-    expect(splitParams).to.eql(StakeInstruction.decodeSplit(stakeInstruction));
-  });
-
-  it('merge', () => {
-    const stakePubkey = Keypair.generate().publicKey;
-    const sourceStakePubKey = Keypair.generate().publicKey;
-    const authorizedPubkey = Keypair.generate().publicKey;
-    const params = {
-      stakePubkey,
-      sourceStakePubKey,
-      authorizedPubkey,
-    };
-    const transaction = StakeProgram.merge(params);
-    expect(transaction.instructions).to.have.length(1);
-    const [stakeInstruction] = transaction.instructions;
-    expect(params).to.eql(StakeInstruction.decodeMerge(stakeInstruction));
-  });
-
   it('withdraw', () => {
     const stakePubkey = Keypair.generate().publicKey;
     const authorizedPubkey = Keypair.generate().publicKey;
@@ -460,7 +405,7 @@ describe('StakeProgram', () => {
         seed,
         authorized: new Authorized(authorized.publicKey, authorized.publicKey),
         lockup: new Lockup(0, 0, new PublicKey(0)),
-        lamports: 4 * minimumAmount + 62,
+        lamports: 3 * minimumAmount + 42,
       });
 
       await sendAndConfirmTransaction(
@@ -470,7 +415,7 @@ describe('StakeProgram', () => {
         {preflightCommitment: 'confirmed'},
       );
       let originalStakeBalance = await connection.getBalance(newAccountPubkey);
-      expect(originalStakeBalance).to.eq(4 * minimumAmount + 62);
+      expect(originalStakeBalance).to.eq(3 * minimumAmount + 42);
 
       let delegation = StakeProgram.delegate({
         stakePubkey: newAccountPubkey,
@@ -542,62 +487,7 @@ describe('StakeProgram', () => {
         },
       );
       const balance = await connection.getBalance(newAccountPubkey);
-      expect(balance).to.eq(2 * minimumAmount + 22);
-
-      // Split stake with seed
-      const seed2 = 'test string 2';
-      const newStake2 = await PublicKey.createWithSeed(
-        payer.publicKey,
-        seed2,
-        StakeProgram.programId,
-      );
-      let splitWithSeed = StakeProgram.splitWithSeed({
-        stakePubkey: newAccountPubkey,
-        authorizedPubkey: authorized.publicKey,
-        lamports: minimumAmount + 20,
-        splitStakePubkey: newStake2,
-        basePubkey: payer.publicKey,
-        seed: seed2,
-      });
-      await sendAndConfirmTransaction(
-        connection,
-        splitWithSeed,
-        [payer, authorized],
-        {
-          preflightCommitment: 'confirmed',
-        },
-      );
-      expect(await connection.getBalance(newAccountPubkey)).to.eq(
-        minimumAmount + 2,
-      );
-
-      // Merge stake
-      let merge = StakeProgram.merge({
-        stakePubkey: newAccountPubkey,
-        sourceStakePubKey: newStake.publicKey,
-        authorizedPubkey: authorized.publicKey,
-      });
-      await sendAndConfirmTransaction(connection, merge, [authorized], {
-        preflightCommitment: 'confirmed',
-      });
-      const mergedBalance = await connection.getBalance(newAccountPubkey);
-      expect(mergedBalance).to.eq(2 * minimumAmount + 22);
-
-      // Resplit
-      split = StakeProgram.split({
-        stakePubkey: newAccountPubkey,
-        authorizedPubkey: authorized.publicKey,
-        splitStakePubkey: newStake.publicKey,
-        lamports: minimumAmount + 20,
-      });
-      await sendAndConfirmTransaction(
-        connection,
-        split,
-        [authorized, newStake],
-        {
-          preflightCommitment: 'confirmed',
-        },
-      );
+      expect(balance).to.eq(minimumAmount + 2);
 
       // Authorize to new account
       const newAuthorized = Keypair.generate();
@@ -635,23 +525,6 @@ describe('StakeProgram', () => {
         sendAndConfirmTransaction(
           connection,
           delegateNotAuthorized,
-          [authorized],
-          {
-            preflightCommitment: 'confirmed',
-          },
-        ),
-      ).to.be.rejected;
-
-      // Test accounts with different authorities can't be merged
-      let mergeNotAuthorized = StakeProgram.merge({
-        stakePubkey: newStake.publicKey,
-        sourceStakePubKey: newAccountPubkey,
-        authorizedPubkey: authorized.publicKey,
-      });
-      await expect(
-        sendAndConfirmTransaction(
-          connection,
-          mergeNotAuthorized,
           [authorized],
           {
             preflightCommitment: 'confirmed',

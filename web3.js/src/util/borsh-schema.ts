@@ -1,5 +1,5 @@
 import {Buffer} from 'buffer';
-import {serialize, deserialize, deserializeUnchecked} from 'borsh';
+import {serialize, deserialize} from 'borsh';
 
 // Class wrapping a plain object
 export class Struct {
@@ -13,10 +13,6 @@ export class Struct {
 
   static decode(data: Buffer): any {
     return deserialize(SOLANA_SCHEMA, this, data);
-  }
-
-  static decodeUnchecked(data: Buffer): any {
-    return deserializeUnchecked(SOLANA_SCHEMA, this, data);
   }
 }
 

@@ -4,15 +4,14 @@ extern crate solana_core;
 extern crate test;
 
 use {
-    crossbeam_channel::unbounded,
     log::*,
     solana_core::retransmit_stage::retransmitter,
-    solana_entry::entry::Entry,
     solana_gossip::{
         cluster_info::{ClusterInfo, Node},
         contact_info::ContactInfo,
     },
     solana_ledger::{
+        entry::Entry,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
         leader_schedule_cache::LeaderScheduleCache,
         shred::Shredder,
@@ -31,6 +30,7 @@ use {
         net::UdpSocket,
         sync::{
             atomic::{AtomicUsize, Ordering},
+            mpsc::channel,
             Arc, RwLock,
         },
         thread::{sleep, Builder},
@@ -73,11 +73,11 @@ fn bench_retransmitter(bencher: &mut Bencher) {
     let cluster_info = Arc::new(cluster_info);
 
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100_000);
-    let bank0 = Bank::new_for_benches(&genesis_config);
+    let bank0 = Bank::new(&genesis_config);
     let bank_forks = BankForks::new(bank0);
     let bank = bank_forks.working_bank();
     let bank_forks = Arc::new(RwLock::new(bank_forks));
-    let (shreds_sender, shreds_receiver) = unbounded();
+    let (shreds_sender, shreds_receiver) = channel();
     const NUM_THREADS: usize = 2;
     let sockets = (0..NUM_THREADS)
         .map(|_| UdpSocket::bind("0.0.0.0:0").unwrap())
@@ -96,12 +96,12 @@ fn bench_retransmitter(bencher: &mut Bencher) {
         })
         .collect();
 
-    let keypair = Keypair::new();
+    let keypair = Arc::new(Keypair::new());
     let slot = 0;
     let parent = 0;
-    let shredder = Shredder::new(slot, parent, 0, 0).unwrap();
+    let shredder = Shredder::new(slot, parent, keypair, 0, 0).unwrap();
     let (mut data_shreds, _) = shredder.entries_to_shreds(
-        &keypair, &entries, true, // is_last_in_slot
+        &entries, true, // is_last_in_slot
         0,    // next_shred_index
         0,    // next_code_index
     );

@@ -296,7 +296,7 @@ mod tests {
 
     fn create_bank(lamports: u64) -> (Bank, Keypair, u64) {
         let (genesis_config, mint_keypair) = create_genesis_config(lamports);
-        let bank = Bank::new_for_tests(&genesis_config);
+        let bank = Bank::new(&genesis_config);
         let rent = bank.get_minimum_balance_for_rent_exemption(std::mem::size_of::<StakeState>());
         (bank, mint_keypair, rent)
     }
@@ -464,16 +464,13 @@ mod tests {
         let custodian_keypair = Keypair::new();
         let custodian_pubkey = custodian_keypair.pubkey();
 
-        let withdrawer_keypair = Keypair::new();
-        let withdrawer_pubkey = withdrawer_keypair.pubkey();
-
         let message = new_stake_account(
             &fee_payer_pubkey,
             &funding_pubkey,
             &base_pubkey,
             lamports,
             &Pubkey::default(),
-            &withdrawer_pubkey,
+            &Pubkey::default(),
             &custodian_pubkey,
             0,
         );
@@ -486,17 +483,16 @@ mod tests {
         let lockups = get_lockups(&bank_client, &base_pubkey, 1);
         let messages = lockup_stake_accounts(
             &fee_payer_pubkey,
-            &withdrawer_pubkey,
+            &custodian_pubkey,
             &LockupArgs {
                 unix_timestamp: Some(1),
-                custodian: Some(custodian_pubkey),
                 ..LockupArgs::default()
             },
             &lockups,
             None,
         );
 
-        let signers = [&fee_payer_keypair, &withdrawer_keypair];
+        let signers = [&fee_payer_keypair, &custodian_keypair];
         for message in messages {
             bank_client
                 .send_and_confirm_message(&signers, message)
@@ -505,7 +501,6 @@ mod tests {
 
         let account = get_account_at(&bank_client, &base_pubkey, 0);
         let lockup = stake_state::lockup_from(&account).unwrap();
-        assert_eq!(lockup.custodian, custodian_pubkey);
         assert_eq!(lockup.unix_timestamp, 1);
         assert_eq!(lockup.epoch, 0);
 

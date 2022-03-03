@@ -5,14 +5,13 @@ use {
     bincode::deserialize,
     serde_json::{json, Map},
     solana_sdk::{
-        instruction::CompiledInstruction, message::AccountKeys,
-        stake::instruction::StakeInstruction,
+        instruction::CompiledInstruction, pubkey::Pubkey, stake::instruction::StakeInstruction,
     },
 };
 
 pub fn parse_stake(
     instruction: &CompiledInstruction,
-    account_keys: &AccountKeys,
+    account_keys: &[Pubkey],
 ) -> Result<ParsedInstructionEnum, ParseInstructionError> {
     let stake_instruction: StakeInstruction = deserialize(&instruction.data)
         .map_err(|_| ParseInstructionError::InstructionNotParsable(ParsableProgram::Stake))?;
@@ -313,11 +312,7 @@ mod test {
             instruction::create_account(&keys[0], &keys[1], &authorized, &lockup, lamports);
         let message = Message::new(&instructions, None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[1],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[1], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "initialize".to_string(),
                 info: json!({
@@ -335,21 +330,13 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[1],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[1], &keys[0..2]).is_err());
 
         let instruction =
             instruction::authorize(&keys[1], &keys[0], &keys[3], StakeAuthorize::Staker, None);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorize".to_string(),
                 info: json!({
@@ -361,11 +348,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..2]).is_err());
 
         let instruction = instruction::authorize(
             &keys[2],
@@ -376,11 +359,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..4], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..4]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorize".to_string(),
                 info: json!({
@@ -393,20 +372,12 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..2]).is_err());
 
         let instruction = instruction::delegate_stake(&keys[1], &keys[0], &keys[2]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..6], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..6]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "delegate".to_string(),
                 info: json!({
@@ -419,11 +390,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..5], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..5]).is_err());
 
         // This looks wrong, but in an actual compiled instruction, the order is:
         //  * split account (signer, allocate + assign first)
@@ -432,11 +399,7 @@ mod test {
         let instructions = instruction::split(&keys[2], &keys[1], lamports, &keys[0]);
         let message = Message::new(&instructions, None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[2],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[2], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "split".to_string(),
                 info: json!({
@@ -447,20 +410,12 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[2],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[2], &keys[0..2]).is_err());
 
         let instruction = instruction::withdraw(&keys[1], &keys[0], &keys[2], lamports, None);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..5], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..5]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "withdraw".to_string(),
                 info: json!({
@@ -477,11 +432,7 @@ mod test {
             instruction::withdraw(&keys[2], &keys[0], &keys[3], lamports, Some(&keys[1]));
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..6], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..6]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "withdraw".to_string(),
                 info: json!({
@@ -495,20 +446,12 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..4], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..4]).is_err());
 
         let instruction = instruction::deactivate_stake(&keys[1], &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "deactivate".to_string(),
                 info: json!({
@@ -518,20 +461,12 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..2]).is_err());
 
         let instructions = instruction::merge(&keys[1], &keys[0], &keys[2]);
         let message = Message::new(&instructions, None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..5], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..5]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "merge".to_string(),
                 info: json!({
@@ -543,11 +478,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..4], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..4]).is_err());
 
         let seed = "test_seed";
         let instruction = instruction::authorize_with_seed(
@@ -561,11 +492,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeWithSeed".to_string(),
                 info: json!({
@@ -579,11 +506,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..2]).is_err());
 
         let instruction = instruction::authorize_with_seed(
             &keys[2],
@@ -596,11 +519,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..4], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..4]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeWithSeed".to_string(),
                 info: json!({
@@ -615,11 +534,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..3], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..3]).is_err());
     }
 
     #[test]
@@ -641,11 +556,7 @@ mod test {
         let instruction = instruction::set_lockup(&keys[1], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..2], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..2]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockup".to_string(),
                 info: json!({
@@ -666,11 +577,7 @@ mod test {
         let instruction = instruction::set_lockup(&keys[1], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..2], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..2]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockup".to_string(),
                 info: json!({
@@ -692,11 +599,7 @@ mod test {
         let instruction = instruction::set_lockup(&keys[1], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..2], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..2]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockup".to_string(),
                 info: json!({
@@ -711,11 +614,7 @@ mod test {
             }
         );
 
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..1], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..1]).is_err());
 
         let lockup = LockupArgs {
             unix_timestamp: Some(unix_timestamp),
@@ -725,11 +624,7 @@ mod test {
         let instruction = instruction::set_lockup_checked(&keys[1], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..2], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..2]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockupChecked".to_string(),
                 info: json!({
@@ -750,11 +645,7 @@ mod test {
         let instruction = instruction::set_lockup_checked(&keys[1], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..2], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..2]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockupChecked".to_string(),
                 info: json!({
@@ -767,11 +658,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..1], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..1]).is_err());
 
         let lockup = LockupArgs {
             unix_timestamp: Some(unix_timestamp),
@@ -781,11 +668,7 @@ mod test {
         let instruction = instruction::set_lockup_checked(&keys[2], &lockup, &keys[0]);
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..3], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..3]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "setLockupChecked".to_string(),
                 info: json!({
@@ -799,11 +682,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..2], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..2]).is_err());
     }
 
     #[test]
@@ -824,11 +703,7 @@ mod test {
             instruction::create_account_checked(&keys[0], &keys[1], &authorized, lamports);
         let message = Message::new(&instructions, None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[1],
-                &AccountKeys::new(&keys[0..4], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[1], &keys[0..4]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "initializeChecked".to_string(),
                 info: json!({
@@ -839,11 +714,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[1],
-            &AccountKeys::new(&keys[0..3], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[1], &keys[0..3]).is_err());
 
         let instruction = instruction::authorize_checked(
             &keys[2],
@@ -854,11 +725,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..4], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..4]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeChecked".to_string(),
                 info: json!({
@@ -870,11 +737,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..3], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..3]).is_err());
 
         let instruction = instruction::authorize_checked(
             &keys[3],
@@ -885,11 +748,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..5], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..5]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeChecked".to_string(),
                 info: json!({
@@ -902,11 +761,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..4], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..4]).is_err());
 
         let seed = "test_seed";
         let instruction = instruction::authorize_checked_with_seed(
@@ -920,11 +775,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..4], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..4]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeCheckedWithSeed".to_string(),
                 info: json!({
@@ -938,11 +789,7 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..3], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..3]).is_err());
 
         let instruction = instruction::authorize_checked_with_seed(
             &keys[3],
@@ -955,11 +802,7 @@ mod test {
         );
         let message = Message::new(&[instruction], None);
         assert_eq!(
-            parse_stake(
-                &message.instructions[0],
-                &AccountKeys::new(&keys[0..5], None)
-            )
-            .unwrap(),
+            parse_stake(&message.instructions[0], &keys[0..5]).unwrap(),
             ParsedInstructionEnum {
                 instruction_type: "authorizeCheckedWithSeed".to_string(),
                 info: json!({
@@ -974,10 +817,6 @@ mod test {
                 }),
             }
         );
-        assert!(parse_stake(
-            &message.instructions[0],
-            &AccountKeys::new(&keys[0..4], None)
-        )
-        .is_err());
+        assert!(parse_stake(&message.instructions[0], &keys[0..4]).is_err());
     }
 }

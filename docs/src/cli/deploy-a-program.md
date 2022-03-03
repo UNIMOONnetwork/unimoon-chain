@@ -152,47 +152,42 @@ Then issue a new `deploy` command and specify the buffer:
 solana program deploy --buffer <KEYPAIR_PATH> <PROGRAM_FILEPATH>
 ```
 
-### Closing program and buffer accounts, and reclaiming their lamports
-
-Both program and buffer accounts can be closed and their lamport balances
-transferred to a recipient's account.
+### Closing buffer accounts and reclaiming their lamports
 
 If deployment fails there will be a left over buffer account that holds
 lamports. The buffer account can either be used to [resume a
-deploy](#resuming-a-failed-deploy) or closed.
+deploy](#resuming-a-failed-deploy) or closed. When closed, the full balance of
+the buffer account will be transferred to the recipient's account.
 
-The program or buffer account's authority must be present to close an account,
-to list all the open program or buffer accounts that match the default
-authority:
+The buffer account's authority must be present to close a buffer account, to
+list all the open buffer accounts that match the default authority:
 
 ```bash
-solana program show --programs
 solana program show --buffers
 ```
 
 To specify a different authority:
 
 ```bash
-solana program show --programs --buffer-authority <AURTHORITY_ADRESS>
 solana program show --buffers --buffer-authority <AURTHORITY_ADRESS>
 ```
 
 To close a single account:
 
 ```bash
-solana program close <BADDRESS>
+solana program close <BUFFER_ADDRESS>
 ```
 
 To close a single account and specify a different authority than the default:
 
 ```bash
-solana program close <ADDRESS> --buffer-authority <KEYPAIR_FILEPATH>
+solana program close <BUFFER_ADDRESS> --buffer-authority <KEYPAIR_FILEPATH>
 ```
 
 To close a single account and specify a different recipient than the default:
 
 ```bash
-solana program close <ADDRESS> --recipient <RECIPIENT_ADDRESS>
+solana program close <BUFFER_ADDRESS> --recipient <RECIPIENT_ADDRESS>
 ```
 
 To close all the buffer accounts associated with the current authority:

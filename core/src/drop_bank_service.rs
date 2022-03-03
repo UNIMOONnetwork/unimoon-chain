@@ -1,9 +1,8 @@
 use {
-    crossbeam_channel::Receiver,
     solana_measure::measure::Measure,
     solana_runtime::bank::Bank,
     std::{
-        sync::Arc,
+        sync::{mpsc::Receiver, Arc},
         thread::{self, Builder, JoinHandle},
     },
 };

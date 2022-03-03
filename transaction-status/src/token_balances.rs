@@ -1,8 +1,8 @@
 use {
     crate::TransactionTokenBalance,
     solana_account_decoder::parse_token::{
-        is_known_spl_token_id, pubkey_from_spl_token, spl_token_native_mint,
-        token_amount_to_ui_amount, UiTokenAmount,
+        pubkey_from_spl_token, spl_token_id, spl_token_native_mint, token_amount_to_ui_amount,
+        UiTokenAmount,
     },
     solana_measure::measure::Measure,
     solana_metrics::datapoint_debug,
@@ -35,6 +35,10 @@ impl TransactionTokenBalancesSet {
     }
 }
 
+fn is_token_program(program_id: &Pubkey) -> bool {
+    program_id == &spl_token_id()
+}
+
 fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
     if mint == &spl_token_native_mint() {
         Some(spl_token::native_mint::DECIMALS)
@@ -52,19 +56,21 @@ fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
 pub fn collect_token_balances(
     bank: &Bank,
     batch: &TransactionBatch,
-    mint_decimals: &mut HashMap<Pubkey, u8>,
+    mut mint_decimals: &mut HashMap<Pubkey, u8>,
 ) -> TransactionTokenBalances {
     let mut balances: TransactionTokenBalances = vec![];
     let mut collect_time = Measure::start("collect_token_balances");
 
-    for transaction in batch.sanitized_transactions() {
-        let account_keys = transaction.message().account_keys();
-        let has_token_program = account_keys.iter().any(is_known_spl_token_id);
+    for transaction in batch.transactions_iter() {
+        let account_keys = &transaction.message.account_keys;
+        let has_token_program = account_keys.iter().any(|p| is_token_program(p));
 
         let mut transaction_balances: Vec<TransactionTokenBalance> = vec![];
         if has_token_program {
             for (index, account_id) in account_keys.iter().enumerate() {
-                if transaction.message().is_invoked(index) || is_known_spl_token_id(account_id) {
+                if is_token_program(account_id)
+                    || transaction.message.program_ids().contains(&account_id)
+                {
                     continue;
                 }
 
@@ -72,7 +78,7 @@ pub fn collect_token_balances(
                     mint,
                     ui_token_amount,
                     owner,
-                }) = collect_token_balance_from_account(bank, account_id, mint_decimals)
+                }) = collect_token_balance_from_account(bank, account_id, &mut mint_decimals)
                 {
                     transaction_balances.push(TransactionTokenBalance {
                         account_index: index as u8,

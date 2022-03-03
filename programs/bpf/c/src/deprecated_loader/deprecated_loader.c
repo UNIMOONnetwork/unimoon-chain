@@ -2,9 +2,8 @@
  * @brief Example C-based BPF program that prints out the parameters
  * passed to it
  */
-#include <sol/types.h>
-#include <sol/log.h>
-#include <sol/deserialize_deprecated.h>
+#include <solana_sdk.h>
+#include <deserialize_deprecated.h>
 
 extern uint64_t entrypoint(const uint8_t *input) {
   SolAccountInfo ka[1];

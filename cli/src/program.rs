@@ -24,7 +24,6 @@ use {
         rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
         tpu_client::{TpuClient, TpuClientConfig},
     },
-    solana_program_runtime::invoke_context::InvokeContext,
     solana_rbpf::{elf::Executable, verifier, vm::Config},
     solana_remote_wallet::remote_wallet::RemoteWalletManager,
     solana_sdk::{
@@ -37,12 +36,12 @@ use {
         message::Message,
         native_token::Sol,
         packet::PACKET_DATA_SIZE,
+        process_instruction::MockInvokeContext,
         pubkey::Pubkey,
         signature::{keypair_from_seed, read_keypair_file, Keypair, Signature, Signer},
         system_instruction::{self, SystemError},
         system_program,
         transaction::{Transaction, TransactionError},
-        transaction_context::TransactionContext,
     },
     std::{
         fs::File,
@@ -1073,7 +1072,7 @@ fn process_set_authority(
     };
 
     trace!("Set a new authority");
-    let blockhash = rpc_client.get_latest_blockhash()?;
+    let (blockhash, _) = rpc_client.get_recent_blockhash()?;
 
     let mut tx = if let Some(ref pubkey) = program_pubkey {
         Transaction::new_unsigned(Message::new(
@@ -1452,7 +1451,7 @@ fn close(
     authority_signer: &dyn Signer,
     program_pubkey: Option<&Pubkey>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let blockhash = rpc_client.get_latest_blockhash()?;
+    let (blockhash, _) = rpc_client.get_recent_blockhash()?;
 
     let mut tx = Transaction::new_unsigned(Message::new(
         &[bpf_loader_upgradeable::close_any(
@@ -1707,7 +1706,6 @@ fn do_process_program_write_and_deploy(
 ) -> ProcessResult {
     // Build messages to calculate fees
     let mut messages: Vec<&Message> = Vec::new();
-    let blockhash = rpc_client.get_latest_blockhash()?;
 
     // Initialize buffer account or complete if already partially initialized
     let (initial_message, write_messages, balance_needed) =
@@ -1753,10 +1751,9 @@ fn do_process_program_write_and_deploy(
                 )
             };
             let initial_message = if !initial_instructions.is_empty() {
-                Some(Message::new_with_blockhash(
+                Some(Message::new(
                     &initial_instructions,
                     Some(&config.signers[0].pubkey()),
-                    &blockhash,
                 ))
             } else {
                 None
@@ -1776,7 +1773,7 @@ fn do_process_program_write_and_deploy(
                 } else {
                     loader_instruction::write(buffer_pubkey, loader_id, offset, bytes)
                 };
-                Message::new_with_blockhash(&[instruction], Some(&payer_pubkey), &blockhash)
+                Message::new(&[instruction], Some(&payer_pubkey))
             };
 
             let mut write_messages = vec![];
@@ -1805,7 +1802,7 @@ fn do_process_program_write_and_deploy(
 
     let final_message = if let Some(program_signers) = program_signers {
         let message = if loader_id == &bpf_loader_upgradeable::id() {
-            Message::new_with_blockhash(
+            Message::new(
                 &bpf_loader_upgradeable::deploy_with_max_program_len(
                     &config.signers[0].pubkey(),
                     &program_signers[0].pubkey(),
@@ -1817,13 +1814,11 @@ fn do_process_program_write_and_deploy(
                     programdata_len,
                 )?,
                 Some(&config.signers[0].pubkey()),
-                &blockhash,
             )
         } else {
-            Message::new_with_blockhash(
+            Message::new(
                 &[loader_instruction::finalize(buffer_pubkey, loader_id)],
                 Some(&config.signers[0].pubkey()),
-                &blockhash,
             )
         };
         Some(message)
@@ -1877,7 +1872,6 @@ fn do_process_program_upgrade(
 
     // Build messages to calculate fees
     let mut messages: Vec<&Message> = Vec::new();
-    let blockhash = rpc_client.get_latest_blockhash()?;
 
     let (initial_message, write_messages, balance_needed) =
         if let Some(buffer_signer) = buffer_signer {
@@ -1909,10 +1903,9 @@ fn do_process_program_upgrade(
             };
 
             let initial_message = if !initial_instructions.is_empty() {
-                Some(Message::new_with_blockhash(
+                Some(Message::new(
                     &initial_instructions,
                     Some(&config.signers[0].pubkey()),
-                    &blockhash,
                 ))
             } else {
                 None
@@ -1928,7 +1921,7 @@ fn do_process_program_upgrade(
                     offset,
                     bytes,
                 );
-                Message::new_with_blockhash(&[instruction], Some(&payer_pubkey), &blockhash)
+                Message::new(&[instruction], Some(&payer_pubkey))
             };
 
             // Create and add write messages
@@ -1955,7 +1948,7 @@ fn do_process_program_upgrade(
     }
 
     // Create and add final message
-    let final_message = Message::new_with_blockhash(
+    let final_message = Message::new(
         &[bpf_loader_upgradeable::upgrade(
             program_id,
             buffer_pubkey,
@@ -1963,7 +1956,6 @@ fn do_process_program_upgrade(
             &config.signers[0].pubkey(),
         )],
         Some(&config.signers[0].pubkey()),
-        &blockhash,
     );
     messages.push(&final_message);
 
@@ -1991,8 +1983,7 @@ fn read_and_verify_elf(program_location: &str) -> Result<Vec<u8>, Box<dyn std::e
     let mut program_data = Vec::new();
     file.read_to_end(&mut program_data)
         .map_err(|err| format!("Unable to read program file: {}", err))?;
-    let mut transaction_context = TransactionContext::new(Vec::new(), 1, 1);
-    let mut invoke_context = InvokeContext::new_mock(&mut transaction_context, &[]);
+    let mut invoke_context = MockInvokeContext::new(vec![]);
 
     // Verify the program
     Executable::<BpfError, ThisInstructionMeter>::from_elf(
@@ -2038,7 +2029,9 @@ fn complete_partial_program_init(
             elf_pubkey,
             account_data_len as u64,
         ));
-        instructions.push(system_instruction::assign(elf_pubkey, loader_id));
+        if account.owner != *loader_id {
+            instructions.push(system_instruction::assign(elf_pubkey, loader_id));
+        }
         if account.lamports < minimum_balance {
             let balance = minimum_balance - account.lamports;
             instructions.push(system_instruction::transfer(
@@ -2067,11 +2060,14 @@ fn check_payer(
     balance_needed: u64,
     messages: &[&Message],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let (_, fee_calculator) = rpc_client.get_recent_blockhash()?;
+
     // Does the payer have enough?
     check_account_for_spend_multiple_fees_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
         balance_needed,
+        &fee_calculator,
         messages,
         config.commitment,
     )?;
@@ -2093,7 +2089,7 @@ fn send_deploy_messages(
     if let Some(message) = initial_message {
         if let Some(initial_signer) = initial_signer {
             trace!("Preparing the required accounts");
-            let blockhash = rpc_client.get_latest_blockhash()?;
+            let (blockhash, _) = rpc_client.get_recent_blockhash()?;
 
             let mut initial_transaction = Transaction::new_unsigned(message.clone());
             // Most of the initial_transaction combinations require both the fee-payer and new program
@@ -2145,7 +2141,7 @@ fn send_deploy_messages(
     if let Some(message) = final_message {
         if let Some(final_signers) = final_signers {
             trace!("Deploying program");
-            let blockhash = rpc_client.get_latest_blockhash()?;
+            let (blockhash, _) = rpc_client.get_recent_blockhash()?;
 
             let mut final_tx = Transaction::new_unsigned(message.clone());
             let mut signers = final_signers.to_vec();

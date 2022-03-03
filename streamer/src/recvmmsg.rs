@@ -10,7 +10,7 @@ use {
     itertools::izip,
     libc::{iovec, mmsghdr, sockaddr_storage, socklen_t, AF_INET, AF_INET6, MSG_WAITFORONE},
     nix::sys::socket::InetAddr,
-    std::{mem, os::unix::io::AsRawFd},
+    std::{convert::TryFrom, mem, os::unix::io::AsRawFd},
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -101,9 +101,9 @@ pub fn recv_mmsg(sock: &UdpSocket, packets: &mut [Packet]) -> io::Result</*num p
     } else {
         usize::try_from(nrecv).unwrap()
     };
-    for (addr, hdr, pkt) in izip!(addrs, hdrs, packets.iter_mut()).take(nrecv) {
+    for (addr, hdr, pkt) in izip!(&addrs, &hdrs, packets.iter_mut()).take(nrecv) {
         pkt.meta.size = hdr.msg_len as usize;
-        if let Some(addr) = cast_socket_addr(&addr, &hdr) {
+        if let Some(addr) = cast_socket_addr(addr, hdr) {
             pkt.meta.set_addr(&addr.to_std());
         }
     }

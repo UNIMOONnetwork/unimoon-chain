@@ -3,10 +3,7 @@ use {
     console::Emoji,
     indicatif::{ProgressBar, ProgressStyle},
     log::*,
-    solana_runtime::{
-        snapshot_package::SnapshotType,
-        snapshot_utils::{self, ArchiveFormat},
-    },
+    solana_runtime::{bank_forks::ArchiveFormat, snapshot_utils},
     solana_sdk::{clock::Slot, genesis_config::DEFAULT_GENESIS_ARCHIVE, hash::Hash},
     std::{
         fs::{self, File},
@@ -84,7 +81,7 @@ pub fn download_file<'a, 'b>(
 
     let progress_bar = new_spinner_progress_bar();
     if use_progress_bar {
-        progress_bar.set_message(format!("{}Downloading {}...", TRUCK, url));
+        progress_bar.set_message(&format!("{}Downloading {}...", TRUCK, url));
     }
 
     let response = reqwest::blocking::Client::new()
@@ -114,7 +111,7 @@ pub fn download_file<'a, 'b>(
                 )
                 .progress_chars("=> "),
         );
-        progress_bar.set_message(format!("{}Downloading~ {}", TRUCK, url));
+        progress_bar.set_message(&format!("{}Downloading~ {}", TRUCK, url));
     } else {
         info!("Downloading {} bytes from {}", download_size, url);
     }
@@ -250,49 +247,29 @@ pub fn download_genesis_if_missing(
     }
 }
 
-/// Download a snapshot archive from `rpc_addr`.  Use `snapshot_type` to specify downloading either
-/// a full snapshot or an incremental snapshot.
-pub fn download_snapshot_archive<'a, 'b>(
+pub fn download_snapshot<'a, 'b>(
     rpc_addr: &SocketAddr,
-    snapshot_archives_dir: &Path,
+    snapshot_output_dir: &Path,
     desired_snapshot_hash: (Slot, Hash),
-    snapshot_type: SnapshotType,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
     use_progress_bar: bool,
+    maximum_snapshots_to_retain: usize,
     progress_notify_callback: &'a mut DownloadProgressCallbackOption<'b>,
 ) -> Result<(), String> {
-    snapshot_utils::purge_old_snapshot_archives(
-        snapshot_archives_dir,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
-    );
+    snapshot_utils::purge_old_snapshot_archives(snapshot_output_dir, maximum_snapshots_to_retain);
 
-    for archive_format in [
+    for compression in &[
         ArchiveFormat::TarZstd,
         ArchiveFormat::TarGzip,
         ArchiveFormat::TarBzip2,
         ArchiveFormat::Tar, // `solana-test-validator` creates uncompressed snapshots
     ] {
-        let destination_path = match snapshot_type {
-            SnapshotType::FullSnapshot => snapshot_utils::build_full_snapshot_archive_path(
-                snapshot_archives_dir.to_path_buf(),
-                desired_snapshot_hash.0,
-                &desired_snapshot_hash.1,
-                archive_format,
-            ),
-            SnapshotType::IncrementalSnapshot(base_slot) => {
-                snapshot_utils::build_incremental_snapshot_archive_path(
-                    snapshot_archives_dir.to_path_buf(),
-                    base_slot,
-                    desired_snapshot_hash.0,
-                    &desired_snapshot_hash.1,
-                    archive_format,
-                )
-            }
-        };
+        let desired_snapshot_package = snapshot_utils::get_snapshot_archive_path(
+            snapshot_output_dir.to_path_buf(),
+            &desired_snapshot_hash,
+            *compression,
+        );
 
-        if destination_path.is_file() {
+        if desired_snapshot_package.is_file() {
             return Ok(());
         }
 
@@ -300,9 +277,13 @@ pub fn download_snapshot_archive<'a, 'b>(
             &format!(
                 "http://{}/{}",
                 rpc_addr,
-                destination_path.file_name().unwrap().to_str().unwrap()
+                desired_snapshot_package
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
             ),
-            &destination_path,
+            &desired_snapshot_package,
             use_progress_bar,
             progress_notify_callback,
         ) {
@@ -311,7 +292,7 @@ pub fn download_snapshot_archive<'a, 'b>(
         }
     }
     Err(format!(
-        "Failed to download a snapshot archive for slot {} from {}",
+        "Failed to download a snapshot for slot {} from {}",
         desired_snapshot_hash.0, rpc_addr
     ))
 }

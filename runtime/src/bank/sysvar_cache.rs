@@ -1,14 +1,44 @@
-use super::Bank;
+use {
+    super::Bank,
+    solana_sdk::{account::ReadableAccount, sysvar::Sysvar},
+};
 
 impl Bank {
     pub(crate) fn fill_missing_sysvar_cache_entries(&self) {
         let mut sysvar_cache = self.sysvar_cache.write().unwrap();
-        sysvar_cache.fill_missing_entries(|pubkey| self.get_account_with_fixed_root(pubkey));
+        if sysvar_cache.get_clock().is_err() {
+            if let Some(clock) = self.load_sysvar_account() {
+                sysvar_cache.set_clock(clock);
+            }
+        }
+        if sysvar_cache.get_epoch_schedule().is_err() {
+            if let Some(epoch_schedule) = self.load_sysvar_account() {
+                sysvar_cache.set_epoch_schedule(epoch_schedule);
+            }
+        }
+        if sysvar_cache.get_fees().is_err() {
+            if let Some(fees) = self.load_sysvar_account() {
+                sysvar_cache.set_fees(fees);
+            }
+        }
+        if sysvar_cache.get_rent().is_err() {
+            if let Some(rent) = self.load_sysvar_account() {
+                sysvar_cache.set_rent(rent);
+            }
+        }
+        if sysvar_cache.get_slot_hashes().is_err() {
+            if let Some(slot_hashes) = self.load_sysvar_account() {
+                sysvar_cache.set_slot_hashes(slot_hashes);
+            }
+        }
     }
 
-    pub(crate) fn reset_sysvar_cache(&self) {
-        let mut sysvar_cache = self.sysvar_cache.write().unwrap();
-        sysvar_cache.reset();
+    fn load_sysvar_account<T: Sysvar>(&self) -> Option<T> {
+        if let Some(account) = self.get_account_with_fixed_root(&T::id()) {
+            bincode::deserialize(account.data()).ok()
+        } else {
+            None
+        }
     }
 }
 
@@ -16,15 +46,23 @@ impl Bank {
 mod tests {
     use {
         super::*,
-        solana_sdk::{genesis_config::create_genesis_config, pubkey::Pubkey},
+        solana_sdk::{
+            genesis_config::create_genesis_config, pubkey::Pubkey, sysvar_cache::SysvarCache,
+        },
         std::sync::Arc,
     };
 
+    impl Bank {
+        pub(crate) fn reset_sysvar_cache(&self) {
+            let mut sysvar_cache = self.sysvar_cache.write().unwrap();
+            *sysvar_cache = SysvarCache::default();
+        }
+    }
+
     #[test]
-    #[allow(deprecated)]
     fn test_sysvar_cache_initialization() {
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
-        let bank0 = Arc::new(Bank::new_for_tests(&genesis_config));
+        let bank0 = Arc::new(Bank::new(&genesis_config));
 
         let bank0_sysvar_cache = bank0.sysvar_cache.read().unwrap();
         let bank0_cached_clock = bank0_sysvar_cache.get_clock();
@@ -64,10 +102,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_reset_and_fill_sysvar_cache() {
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
-        let bank0 = Arc::new(Bank::new_for_tests(&genesis_config));
+        let bank0 = Arc::new(Bank::new(&genesis_config));
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), bank0.slot() + 1);
 
         let bank1_sysvar_cache = bank1.sysvar_cache.read().unwrap();

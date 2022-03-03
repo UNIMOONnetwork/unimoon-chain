@@ -120,8 +120,8 @@ mod tests {
     #[derive(PartialEq, Clone, Debug, BorshSerialize, BorshDeserialize, BorshSchema)]
     enum TestEnum {
         NoValue,
-        Number(u32),
-        Struct {
+        Value(u32),
+        StructValue {
             #[allow(dead_code)]
             number: u64,
             #[allow(dead_code)]
@@ -188,7 +188,7 @@ mod tests {
     fn packed_len() {
         assert_eq!(
             get_packed_len::<TestEnum>(),
-            size_of::<u8>() + size_of::<u64>() + u8::BITS as usize
+            size_of::<u8>() + size_of::<u64>() + size_of::<u8>() * 8
         );
         assert_eq!(
             get_packed_len::<TestStruct>(),
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn instance_packed_len_matches_packed_len() {
-        let enumeration = TestEnum::Struct {
+        let enumeration = TestEnum::StructValue {
             number: u64::MAX,
             array: [255; 8],
         };
@@ -278,9 +278,9 @@ mod tests {
         let string1 = "the first string, it's actually really really long".to_string();
         let enum1 = TestEnum::NoValue;
         let string2 = "second string, shorter".to_string();
-        let enum2 = TestEnum::Number(u32::MAX);
+        let enum2 = TestEnum::Value(u32::MAX);
         let string3 = "third".to_string();
-        let enum3 = TestEnum::Struct {
+        let enum3 = TestEnum::StructValue {
             number: 0,
             array: [0; 8],
         };

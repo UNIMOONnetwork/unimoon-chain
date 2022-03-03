@@ -1,4 +1,4 @@
-import * as BufferLayout from '@solana/buffer-layout';
+import * as BufferLayout from 'buffer-layout';
 
 import {encodeData, decodeData, InstructionType} from './instruction';
 import * as Layout from './layout';
@@ -148,18 +148,6 @@ export type SplitStakeParams = {
 };
 
 /**
- * Split with seed transaction params
- */
-export type SplitStakeWithSeedParams = {
-  stakePubkey: PublicKey;
-  authorizedPubkey: PublicKey;
-  splitStakePubkey: PublicKey;
-  basePubkey: PublicKey;
-  seed: string;
-  lamports: number;
-};
-
-/**
  * Withdraw stake instruction params
  */
 export type WithdrawStakeParams = {
@@ -175,15 +163,6 @@ export type WithdrawStakeParams = {
  */
 export type DeactivateStakeParams = {
   stakePubkey: PublicKey;
-  authorizedPubkey: PublicKey;
-};
-
-/**
- * Merge stake instruction params
- */
-export type MergeStakeParams = {
-  stakePubkey: PublicKey;
-  sourceStakePubKey: PublicKey;
   authorizedPubkey: PublicKey;
 };
 
@@ -349,21 +328,6 @@ export class StakeInstruction {
   }
 
   /**
-   * Decode a merge stake instruction and retrieve the instruction params.
-   */
-  static decodeMerge(instruction: TransactionInstruction): MergeStakeParams {
-    this.checkProgramId(instruction.programId);
-    this.checkKeyLength(instruction.keys, 3);
-    decodeData(STAKE_INSTRUCTION_LAYOUTS.Merge, instruction.data);
-
-    return {
-      stakePubkey: instruction.keys[0].pubkey,
-      sourceStakePubKey: instruction.keys[1].pubkey,
-      authorizedPubkey: instruction.keys[4].pubkey,
-    };
-  }
-
-  /**
    * Decode a withdraw stake instruction and retrieve the instruction params.
    */
   static decodeWithdraw(
@@ -435,8 +399,7 @@ export type StakeInstructionType =
   | 'Delegate'
   | 'Initialize'
   | 'Split'
-  | 'Withdraw'
-  | 'Merge';
+  | 'Withdraw';
 
 /**
  * An enumeration of valid stake InstructionType's
@@ -481,10 +444,6 @@ export const STAKE_INSTRUCTION_LAYOUTS: {
   },
   Deactivate: {
     index: 5,
-    layout: BufferLayout.struct([BufferLayout.u32('instruction')]),
-  },
-  Merge: {
-    index: 7,
     layout: BufferLayout.struct([BufferLayout.u32('instruction')]),
   },
   AuthorizeWithSeed: {
@@ -718,91 +677,28 @@ export class StakeProgram {
   }
 
   /**
-   * @internal
-   */
-  static splitInstruction(params: SplitStakeParams): TransactionInstruction {
-    const {stakePubkey, authorizedPubkey, splitStakePubkey, lamports} = params;
-    const type = STAKE_INSTRUCTION_LAYOUTS.Split;
-    const data = encodeData(type, {lamports});
-    return new TransactionInstruction({
-      keys: [
-        {pubkey: stakePubkey, isSigner: false, isWritable: true},
-        {pubkey: splitStakePubkey, isSigner: false, isWritable: true},
-        {pubkey: authorizedPubkey, isSigner: true, isWritable: false},
-      ],
-      programId: this.programId,
-      data,
-    });
-  }
-
-  /**
    * Generate a Transaction that splits Stake tokens into another stake account
    */
   static split(params: SplitStakeParams): Transaction {
+    const {stakePubkey, authorizedPubkey, splitStakePubkey, lamports} = params;
+
     const transaction = new Transaction();
     transaction.add(
       SystemProgram.createAccount({
-        fromPubkey: params.authorizedPubkey,
-        newAccountPubkey: params.splitStakePubkey,
+        fromPubkey: authorizedPubkey,
+        newAccountPubkey: splitStakePubkey,
         lamports: 0,
         space: this.space,
         programId: this.programId,
       }),
     );
-    return transaction.add(this.splitInstruction(params));
-  }
+    const type = STAKE_INSTRUCTION_LAYOUTS.Split;
+    const data = encodeData(type, {lamports});
 
-  /**
-   * Generate a Transaction that splits Stake tokens into another account
-   * derived from a base public key and seed
-   */
-  static splitWithSeed(params: SplitStakeWithSeedParams): Transaction {
-    const {
-      stakePubkey,
-      authorizedPubkey,
-      splitStakePubkey,
-      basePubkey,
-      seed,
-      lamports,
-    } = params;
-    const transaction = new Transaction();
-    transaction.add(
-      SystemProgram.allocate({
-        accountPubkey: splitStakePubkey,
-        basePubkey,
-        seed,
-        space: this.space,
-        programId: this.programId,
-      }),
-    );
-    return transaction.add(
-      this.splitInstruction({
-        stakePubkey,
-        authorizedPubkey,
-        splitStakePubkey,
-        lamports,
-      }),
-    );
-  }
-
-  /**
-   * Generate a Transaction that merges Stake accounts.
-   */
-  static merge(params: MergeStakeParams): Transaction {
-    const {stakePubkey, sourceStakePubKey, authorizedPubkey} = params;
-    const type = STAKE_INSTRUCTION_LAYOUTS.Merge;
-    const data = encodeData(type);
-
-    return new Transaction().add({
+    return transaction.add({
       keys: [
         {pubkey: stakePubkey, isSigner: false, isWritable: true},
-        {pubkey: sourceStakePubKey, isSigner: false, isWritable: true},
-        {pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false},
-        {
-          pubkey: SYSVAR_STAKE_HISTORY_PUBKEY,
-          isSigner: false,
-          isWritable: false,
-        },
+        {pubkey: splitStakePubkey, isSigner: false, isWritable: true},
         {pubkey: authorizedPubkey, isSigner: true, isWritable: false},
       ],
       programId: this.programId,

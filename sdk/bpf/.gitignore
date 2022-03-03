@@ -7,4 +7,3 @@
 /dependencies/bin*
 /dependencies/.crates.toml
 /dependencies/.crates2.json
-/syscalls.txt

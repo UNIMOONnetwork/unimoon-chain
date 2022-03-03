@@ -5,7 +5,6 @@ extern crate test;
 
 use {
     log::*,
-    solana_program_runtime::invoke_context::InvokeContext,
     solana_runtime::{bank::*, bank_client::BankClient, loader_utils::create_invoke_instruction},
     solana_sdk::{
         client::{AsyncClient, SyncClient},
@@ -13,6 +12,7 @@ use {
         genesis_config::create_genesis_config,
         instruction::InstructionError,
         message::Message,
+        process_instruction::InvokeContext,
         pubkey::Pubkey,
         signature::{Keypair, Signer},
         transaction::Transaction,
@@ -33,9 +33,9 @@ const NOOP_PROGRAM_ID: [u8; 32] = [
 
 #[allow(clippy::unnecessary_wraps)]
 fn process_instruction(
-    _first_instruction_account: usize,
+    _program_id: &Pubkey,
     _data: &[u8],
-    _invoke_context: &mut InvokeContext,
+    _invoke_context: &mut dyn InvokeContext,
 ) -> Result<(), InstructionError> {
     Ok(())
 }
@@ -55,7 +55,7 @@ pub fn create_builtin_transactions(
                 .unwrap_or_else(|_| panic!("{}:{}", line!(), file!()));
 
             let instruction = create_invoke_instruction(rando0.pubkey(), program_id, &1u8);
-            let blockhash = bank_client.get_latest_blockhash().unwrap();
+            let (blockhash, _fee_calculator) = bank_client.get_recent_blockhash().unwrap();
             let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
             Transaction::new(&[&rando0], message, blockhash)
         })
@@ -77,7 +77,7 @@ pub fn create_native_loader_transactions(
                 .unwrap_or_else(|_| panic!("{}:{}", line!(), file!()));
 
             let instruction = create_invoke_instruction(rando0.pubkey(), program_id, &1u8);
-            let blockhash = bank_client.get_latest_blockhash().unwrap();
+            let (blockhash, _fee_calculator) = bank_client.get_recent_blockhash().unwrap();
             let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
             Transaction::new(&[&rando0], message, blockhash)
         })
@@ -85,12 +85,12 @@ pub fn create_native_loader_transactions(
 }
 
 fn sync_bencher(bank: &Arc<Bank>, _bank_client: &BankClient, transactions: &[Transaction]) {
-    let results = bank.process_transactions(transactions.iter());
+    let results = bank.process_transactions(transactions);
     assert!(results.iter().all(Result::is_ok));
 }
 
 fn async_bencher(bank: &Arc<Bank>, bank_client: &BankClient, transactions: &[Transaction]) {
-    for transaction in transactions.iter().cloned() {
+    for transaction in transactions.to_owned() {
         bank_client.async_send_transaction(transaction).unwrap();
     }
     for _ in 0..1_000_000_000_u64 {
@@ -123,26 +123,21 @@ fn do_bench_transactions(
 ) {
     solana_logger::setup();
     let ns_per_s = 1_000_000_000;
-    let (mut genesis_config, mint_keypair) = create_genesis_config(100_000_000_000_000);
+    let (mut genesis_config, mint_keypair) = create_genesis_config(100_000_000);
     genesis_config.ticks_per_slot = 100;
-
-    let bank = Bank::new_for_benches(&genesis_config);
-    // freeze bank so that slot hashes is populated
-    bank.freeze();
-
-    let mut bank = Bank::new_from_parent(&Arc::new(bank), &Pubkey::default(), 1);
+    let mut bank = Bank::new(&genesis_config);
     bank.add_builtin(
         "builtin_program",
-        &Pubkey::new(&BUILTIN_PROGRAM_ID),
+        Pubkey::new(&BUILTIN_PROGRAM_ID),
         process_instruction,
     );
-    bank.add_builtin_account("solana_noop_program", &Pubkey::new(&NOOP_PROGRAM_ID), false);
+    bank.add_native_program("solana_noop_program", &Pubkey::new(&NOOP_PROGRAM_ID), false);
     let bank = Arc::new(bank);
     let bank_client = BankClient::new_shared(&bank);
     let transactions = create_transactions(&bank_client, &mint_keypair);
 
     // Do once to fund accounts, load modules, etc...
-    let results = bank.process_transactions(transactions.iter());
+    let results = bank.process_transactions(&transactions);
     assert!(results.iter().all(Result::is_ok));
 
     bencher.iter(|| {
@@ -187,7 +182,7 @@ fn bench_bank_async_process_native_loader_transactions(bencher: &mut Bencher) {
 #[ignore]
 fn bench_bank_update_recent_blockhashes(bencher: &mut Bencher) {
     let (genesis_config, _mint_keypair) = create_genesis_config(100);
-    let mut bank = Arc::new(Bank::new_for_benches(&genesis_config));
+    let mut bank = Arc::new(Bank::new(&genesis_config));
     goto_end_of_slot(Arc::get_mut(&mut bank).unwrap());
     let genesis_hash = bank.last_blockhash();
     // Prime blockhash_queue

@@ -3,14 +3,16 @@
 //!
 use {
     crate::{
-        ancestor_hashes_service::AncestorHashesReplayUpdateReceiver,
         cluster_info_vote_listener::VerifiedVoteReceiver,
+        cluster_slots::ClusterSlots,
         completed_data_sets_service::CompletedDataSetsSender,
         repair_response,
-        repair_service::{OutstandingShredRepairs, RepairInfo, RepairService},
+        repair_service::{OutstandingRepairs, RepairInfo, RepairService},
         result::{Error, Result},
     },
-    crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{
+        unbounded, Receiver as CrossbeamReceiver, RecvTimeoutError, Sender as CrossbeamSender,
+    },
     rayon::{prelude::*, ThreadPool},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
@@ -30,6 +32,7 @@ use {
         net::{SocketAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc::Sender,
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
@@ -37,8 +40,8 @@ use {
     },
 };
 
-type DuplicateSlotSender = Sender<Slot>;
-pub(crate) type DuplicateSlotReceiver = Receiver<Slot>;
+type DuplicateSlotSender = CrossbeamSender<Slot>;
+pub(crate) type DuplicateSlotReceiver = CrossbeamReceiver<Slot>;
 
 #[derive(Default)]
 struct WindowServiceMetrics {
@@ -94,8 +97,8 @@ impl WindowServiceMetrics {
     fn record_error(&mut self, err: &Error) {
         self.num_errors += 1;
         match err {
-            Error::TrySend => self.num_errors_try_crossbeam_send += 1,
-            Error::RecvTimeout(_) => self.num_errors_cross_beam_recv_timeout += 1,
+            Error::TryCrossbeamSend => self.num_errors_try_crossbeam_send += 1,
+            Error::CrossbeamRecvTimeout(_) => self.num_errors_cross_beam_recv_timeout += 1,
             Error::Blockstore(err) => {
                 self.num_errors_blockstore += 1;
                 error!("blockstore error: {}", err);
@@ -121,7 +124,7 @@ impl ReceiveWindowStats {
         const MAX_NUM_ADDRS: usize = 5;
         const SUBMIT_CADENCE: Duration = Duration::from_secs(2);
         let elapsed = self.since.as_ref().map(Instant::elapsed);
-        if elapsed.unwrap_or(Duration::MAX) < SUBMIT_CADENCE {
+        if elapsed.map(|e| e < SUBMIT_CADENCE).unwrap_or_default() {
             return;
         }
         datapoint_info!(
@@ -208,7 +211,7 @@ pub(crate) fn should_retransmit_and_persist(
 fn run_check_duplicate(
     cluster_info: &ClusterInfo,
     blockstore: &Blockstore,
-    shred_receiver: &Receiver<Shred>,
+    shred_receiver: &CrossbeamReceiver<Shred>,
     duplicate_slot_sender: &DuplicateSlotSender,
 ) -> Result<()> {
     let check_duplicate = |shred: Shred| -> Result<()> {
@@ -230,28 +233,29 @@ fn run_check_duplicate(
 
         Ok(())
     };
-    const RECV_TIMEOUT: Duration = Duration::from_millis(200);
-    std::iter::once(shred_receiver.recv_timeout(RECV_TIMEOUT)?)
-        .chain(shred_receiver.try_iter())
-        .try_for_each(check_duplicate)
+    let timer = Duration::from_millis(200);
+    let shred = shred_receiver.recv_timeout(timer)?;
+    check_duplicate(shred)?;
+    while let Ok(shred) = shred_receiver.try_recv() {
+        check_duplicate(shred)?;
+    }
+
+    Ok(())
 }
 
 fn verify_repair(
-    outstanding_requests: &mut OutstandingShredRepairs,
+    outstanding_requests: &mut OutstandingRepairs,
     shred: &Shred,
     repair_meta: &Option<RepairMeta>,
 ) -> bool {
     repair_meta
         .as_ref()
         .map(|repair_meta| {
-            outstanding_requests
-                .register_response(
-                    repair_meta.nonce,
-                    shred,
-                    solana_sdk::timing::timestamp(),
-                    |_| (),
-                )
-                .is_some()
+            outstanding_requests.register_response(
+                repair_meta.nonce,
+                shred,
+                solana_sdk::timing::timestamp(),
+            )
         })
         .unwrap_or(true)
 }
@@ -259,7 +263,7 @@ fn verify_repair(
 fn prune_shreds_invalid_repair(
     shreds: &mut Vec<Shred>,
     repair_infos: &mut Vec<Option<RepairMeta>>,
-    outstanding_requests: &RwLock<OutstandingShredRepairs>,
+    outstanding_requests: &RwLock<OutstandingRepairs>,
 ) {
     assert_eq!(shreds.len(), repair_infos.len());
     let mut i = 0;
@@ -284,7 +288,7 @@ fn prune_shreds_invalid_repair(
 }
 
 fn run_insert<F>(
-    shred_receiver: &Receiver<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
+    shred_receiver: &CrossbeamReceiver<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
     blockstore: &Blockstore,
     leader_schedule_cache: &LeaderScheduleCache,
     handle_duplicate: F,
@@ -292,7 +296,7 @@ fn run_insert<F>(
     ws_metrics: &mut WindowServiceMetrics,
     completed_data_sets_sender: &CompletedDataSetsSender,
     retransmit_sender: &Sender<Vec<Shred>>,
-    outstanding_requests: &RwLock<OutstandingShredRepairs>,
+    outstanding_requests: &RwLock<OutstandingRepairs>,
 ) -> Result<()>
 where
     F: Fn(Shred),
@@ -342,8 +346,8 @@ where
 fn recv_window<F>(
     blockstore: &Blockstore,
     bank_forks: &RwLock<BankForks>,
-    insert_shred_sender: &Sender<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
-    verified_receiver: &Receiver<Vec<PacketBatch>>,
+    insert_shred_sender: &CrossbeamSender<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
+    verified_receiver: &CrossbeamReceiver<Vec<PacketBatch>>,
     retransmit_sender: &Sender<Vec<Shred>>,
     shred_filter: F,
     thread_pool: &ThreadPool,
@@ -359,7 +363,7 @@ where
     let last_root = blockstore.last_root();
     let working_bank = bank_forks.read().unwrap().working_bank();
     let handle_packet = |packet: &Packet| {
-        if packet.meta.discard() {
+        if packet.meta.discard {
             inc_new_counter_debug!("streamer-recv_window-invalid_or_unnecessary_packet", 1);
             return None;
         }
@@ -372,7 +376,7 @@ where
         if !shred_filter(&shred, working_bank.clone(), last_root) {
             return None;
         }
-        if packet.meta.repair() {
+        if packet.meta.repair {
             let repair_info = RepairMeta {
                 _from_addr: packet.meta.addr(),
                 // If can't parse the nonce, dump the packet.
@@ -448,18 +452,18 @@ impl WindowService {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new<F>(
         blockstore: Arc<Blockstore>,
-        verified_receiver: Receiver<Vec<PacketBatch>>,
+        cluster_info: Arc<ClusterInfo>,
+        verified_receiver: CrossbeamReceiver<Vec<PacketBatch>>,
         retransmit_sender: Sender<Vec<Shred>>,
         repair_socket: Arc<UdpSocket>,
-        ancestor_hashes_socket: Arc<UdpSocket>,
         exit: Arc<AtomicBool>,
         repair_info: RepairInfo,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         shred_filter: F,
+        cluster_slots: Arc<ClusterSlots>,
         verified_vote_receiver: VerifiedVoteReceiver,
         completed_data_sets_sender: CompletedDataSetsSender,
         duplicate_slots_sender: DuplicateSlotSender,
-        ancestor_hashes_replay_update_receiver: AncestorHashesReplayUpdateReceiver,
     ) -> WindowService
     where
         F: 'static
@@ -467,28 +471,26 @@ impl WindowService {
             + std::marker::Send
             + std::marker::Sync,
     {
-        let outstanding_requests = Arc::<RwLock<OutstandingShredRepairs>>::default();
+        let outstanding_requests = Arc::<RwLock<OutstandingRepairs>>::default();
 
         let bank_forks = repair_info.bank_forks.clone();
-        let cluster_info = repair_info.cluster_info.clone();
-        let id = cluster_info.id();
 
         let repair_service = RepairService::new(
             blockstore.clone(),
             exit.clone(),
             repair_socket,
-            ancestor_hashes_socket,
+            cluster_info.clone(),
             repair_info,
+            cluster_slots,
             verified_vote_receiver,
             outstanding_requests.clone(),
-            ancestor_hashes_replay_update_receiver,
         );
 
         let (insert_sender, insert_receiver) = unbounded();
         let (duplicate_sender, duplicate_receiver) = unbounded();
 
         let t_check_duplicate = Self::start_check_duplicate_thread(
-            cluster_info,
+            cluster_info.clone(),
             exit.clone(),
             blockstore.clone(),
             duplicate_receiver,
@@ -507,7 +509,7 @@ impl WindowService {
         );
 
         let t_window = Self::start_recv_window_thread(
-            id,
+            cluster_info.id(),
             exit,
             blockstore,
             insert_sender,
@@ -529,7 +531,7 @@ impl WindowService {
         cluster_info: Arc<ClusterInfo>,
         exit: Arc<AtomicBool>,
         blockstore: Arc<Blockstore>,
-        duplicate_receiver: Receiver<Shred>,
+        duplicate_receiver: CrossbeamReceiver<Shred>,
         duplicate_slot_sender: DuplicateSlotSender,
     ) -> JoinHandle<()> {
         let handle_error = || {
@@ -561,11 +563,11 @@ impl WindowService {
         exit: Arc<AtomicBool>,
         blockstore: Arc<Blockstore>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
-        insert_receiver: Receiver<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
-        check_duplicate_sender: Sender<Shred>,
+        insert_receiver: CrossbeamReceiver<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
+        check_duplicate_sender: CrossbeamSender<Shred>,
         completed_data_sets_sender: CompletedDataSetsSender,
         retransmit_sender: Sender<Vec<Shred>>,
-        outstanding_requests: Arc<RwLock<OutstandingShredRepairs>>,
+        outstanding_requests: Arc<RwLock<OutstandingRepairs>>,
     ) -> JoinHandle<()> {
         let mut handle_timeout = || {};
         let handle_error = || {
@@ -620,8 +622,8 @@ impl WindowService {
         id: Pubkey,
         exit: Arc<AtomicBool>,
         blockstore: Arc<Blockstore>,
-        insert_sender: Sender<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
-        verified_receiver: Receiver<Vec<PacketBatch>>,
+        insert_sender: CrossbeamSender<(Vec<Shred>, Vec<Option<RepairMeta>>)>,
+        verified_receiver: CrossbeamReceiver<Vec<PacketBatch>>,
         shred_filter: F,
         bank_forks: Arc<RwLock<BankForks>>,
         retransmit_sender: Sender<Vec<Shred>>,
@@ -685,12 +687,12 @@ impl WindowService {
         H: Fn(),
     {
         match e {
-            Error::RecvTimeout(RecvTimeoutError::Disconnected) => true,
-            Error::RecvTimeout(RecvTimeoutError::Timeout) => {
+            Error::CrossbeamRecvTimeout(RecvTimeoutError::Disconnected) => true,
+            Error::CrossbeamRecvTimeout(RecvTimeoutError::Timeout) => {
                 handle_timeout();
                 false
             }
-            Error::Send => true,
+            Error::CrossbeamSend => true,
             _ => {
                 handle_error();
                 error!("thread {:?} error {:?}", thread::current().name(), e);
@@ -711,10 +713,10 @@ impl WindowService {
 mod test {
     use {
         super::*,
-        solana_entry::entry::{create_ticks, Entry},
         solana_gossip::contact_info::ContactInfo,
         solana_ledger::{
             blockstore::{make_many_slot_entries, Blockstore},
+            entry::{create_ticks, Entry},
             genesis_utils::create_genesis_config_with_leader,
             get_tmp_ledger_path,
             shred::{DataShredHeader, Shredder},
@@ -732,11 +734,11 @@ mod test {
         entries: &[Entry],
         slot: Slot,
         parent: Slot,
-        keypair: &Keypair,
+        keypair: &Arc<Keypair>,
     ) -> Vec<Shred> {
-        let shredder = Shredder::new(slot, parent, 0, 0).unwrap();
+        let shredder = Shredder::new(slot, parent, keypair.clone(), 0, 0).unwrap();
         let (data_shreds, _) = shredder.entries_to_shreds(
-            keypair, entries, true, // is_last_in_slot
+            entries, true, // is_last_in_slot
             0,    // next_shred_index
             0,    // next_code_index
         );
@@ -749,7 +751,7 @@ mod test {
         let blockstore = Arc::new(Blockstore::open(&blockstore_path).unwrap());
         let num_entries = 10;
         let original_entries = create_ticks(num_entries, 0, Hash::default());
-        let mut shreds = local_entries_to_shred(&original_entries, 0, 0, &Keypair::new());
+        let mut shreds = local_entries_to_shred(&original_entries, 0, 0, &Arc::new(Keypair::new()));
         shreds.reverse();
         blockstore
             .insert_shreds(shreds, None, false)
@@ -766,7 +768,7 @@ mod test {
         let me_id = solana_sdk::pubkey::new_rand();
         let leader_keypair = Arc::new(Keypair::new());
         let leader_pubkey = leader_keypair.pubkey();
-        let bank = Arc::new(Bank::new_for_tests(
+        let bank = Arc::new(Bank::new(
             &create_genesis_config_with_leader(100, &leader_pubkey, 10).genesis_config,
         ));
         let cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
@@ -782,7 +784,6 @@ mod test {
             0,
             0
         ));
-
         // with the wrong shred_version, shred gets thrown out
         assert!(!should_retransmit_and_persist(
             &shreds[0],
@@ -793,26 +794,44 @@ mod test {
             1
         ));
 
-        // substitute leader_pubkey for me_id so it looks I was the leader
-        // if the shred came back from me, it doesn't continue, whether or not I have a bank
-        assert!(!should_retransmit_and_persist(
-            &shreds[0],
+        // If it's a coding shred, test that slot >= root
+        let (common, coding) = Shredder::new_coding_shred_header(
+            5, // slot
+            5, // index
+            5, // fec_set_index
+            6, // num_data_shreds
+            6, // num_coding_shreds
+            3, // position
+            0, // version
+        );
+        let mut coding_shred =
+            Shred::new_empty_from_header(common, DataShredHeader::default(), coding);
+        Shredder::sign_shred(&leader_keypair, &mut coding_shred);
+        assert!(should_retransmit_and_persist(
+            &coding_shred,
             Some(bank.clone()),
             &cache,
-            &leader_pubkey,
+            &me_id,
             0,
             0
         ));
-        assert!(!should_retransmit_and_persist(
-            &shreds[0],
-            None,
+        assert!(should_retransmit_and_persist(
+            &coding_shred,
+            Some(bank.clone()),
             &cache,
-            &leader_pubkey,
-            0,
+            &me_id,
+            5,
+            0
+        ));
+        assert!(!should_retransmit_and_persist(
+            &coding_shred,
+            Some(bank.clone()),
+            &cache,
+            &me_id,
+            6,
             0
         ));
 
-        // change the shred's slot so leader lookup fails
         // with a Bank and no idea who leader is, shred gets thrown out
         let mut bad_slot_shred = shreds[0].clone();
         bad_slot_shred.set_slot(MINIMUM_SLOTS_PER_EPOCH as u64 * 3);
@@ -837,82 +856,34 @@ mod test {
             0
         ));
 
-        // with an invalid index, shred gets thrown out
-        let mut bad_index_shred = shreds[0].clone();
-        bad_index_shred.common_header.index = (MAX_DATA_SHREDS_PER_SLOT + 1) as u32;
-        assert!(!should_retransmit_and_persist(
-            &bad_index_shred,
-            Some(bank.clone()),
-            &cache,
-            &me_id,
-            0,
-            0
-        ));
-
         // with a shred where shred.slot() == root, shred gets thrown out
-        let root = MINIMUM_SLOTS_PER_EPOCH as u64 * 3;
-        let shreds = local_entries_to_shred(&[Entry::default()], root, root - 1, &leader_keypair);
+        let slot = MINIMUM_SLOTS_PER_EPOCH as u64 * 3;
+        let shreds = local_entries_to_shred(&[Entry::default()], slot, slot - 1, &leader_keypair);
         assert!(!should_retransmit_and_persist(
             &shreds[0],
             Some(bank.clone()),
             &cache,
             &me_id,
-            root,
+            slot,
             0
         ));
 
         // with a shred where shred.parent() < root, shred gets thrown out
-        let root = MINIMUM_SLOTS_PER_EPOCH as u64 * 3;
+        let slot = MINIMUM_SLOTS_PER_EPOCH as u64 * 3;
         let shreds =
-            local_entries_to_shred(&[Entry::default()], root + 1, root - 1, &leader_keypair);
+            local_entries_to_shred(&[Entry::default()], slot + 1, slot - 1, &leader_keypair);
         assert!(!should_retransmit_and_persist(
             &shreds[0],
-            Some(bank.clone()),
-            &cache,
-            &me_id,
-            root,
-            0
-        ));
-
-        // coding shreds don't contain parent slot information, test that slot >= root
-        let (common, coding) = Shredder::new_coding_shred_header(
-            5, // slot
-            5, // index
-            5, // fec_set_index
-            6, // num_data_shreds
-            6, // num_coding_shreds
-            3, // position
-            0, // version
-        );
-        let mut coding_shred =
-            Shred::new_empty_from_header(common, DataShredHeader::default(), coding);
-        Shredder::sign_shred(&leader_keypair, &mut coding_shred);
-        // shred.slot() > root, shred continues
-        assert!(should_retransmit_and_persist(
-            &coding_shred,
-            Some(bank.clone()),
-            &cache,
-            &me_id,
-            0,
-            0
-        ));
-        // shred.slot() == root, shred continues
-        assert!(should_retransmit_and_persist(
-            &coding_shred,
-            Some(bank.clone()),
-            &cache,
-            &me_id,
-            5,
-            0
-        ));
-        // shred.slot() < root, shred gets thrown out
-        assert!(!should_retransmit_and_persist(
-            &coding_shred,
             Some(bank),
             &cache,
             &me_id,
-            6,
+            slot,
             0
+        ));
+
+        // if the shred came back from me, it doesn't continue, whether or not I have a bank
+        assert!(!should_retransmit_and_persist(
+            &shreds[0], None, &cache, &me_id, 0, 0
         ));
     }
 
@@ -955,7 +926,7 @@ mod test {
     #[test]
     fn test_prune_shreds() {
         use {
-            crate::serve_repair::ShredRepairType,
+            crate::serve_repair::RepairType,
             std::net::{IpAddr, Ipv4Addr},
         };
         solana_logger::setup();
@@ -975,8 +946,8 @@ mod test {
             _from_addr,
             nonce: 0,
         };
-        let outstanding_requests = Arc::new(RwLock::new(OutstandingShredRepairs::default()));
-        let repair_type = ShredRepairType::Orphan(9);
+        let outstanding_requests = Arc::new(RwLock::new(OutstandingRepairs::default()));
+        let repair_type = RepairType::Orphan(9);
         let nonce = outstanding_requests
             .write()
             .unwrap()

@@ -27,9 +27,8 @@
 use {
     crate::{
         contact_info::ContactInfo,
-        crds_entry::CrdsEntry,
         crds_shards::CrdsShards,
-        crds_value::{CrdsData, CrdsValue, CrdsValueLabel},
+        crds_value::{CrdsData, CrdsValue, CrdsValueLabel, LowestSlot},
     },
     bincode::serialize,
     indexmap::{
@@ -278,24 +277,31 @@ impl Crds {
         }
     }
 
-    pub fn get<'a, 'b, V>(&'a self, key: V::Key) -> Option<V>
-    where
-        V: CrdsEntry<'a, 'b>,
-    {
-        V::get_entry(&self.table, key)
+    pub fn get(&self, label: &CrdsValueLabel) -> Option<&VersionedCrdsValue> {
+        self.table.get(label)
+    }
+
+    pub fn get_contact_info(&self, pubkey: Pubkey) -> Option<&ContactInfo> {
+        let label = CrdsValueLabel::ContactInfo(pubkey);
+        self.table.get(&label)?.value.contact_info()
     }
 
     pub(crate) fn get_shred_version(&self, pubkey: &Pubkey) -> Option<u16> {
         self.shred_versions.get(pubkey).copied()
     }
 
+    pub fn get_lowest_slot(&self, pubkey: Pubkey) -> Option<&LowestSlot> {
+        let lable = CrdsValueLabel::LowestSlot(pubkey);
+        self.table.get(&lable)?.value.lowest_slot()
+    }
+
     /// Returns all entries which are ContactInfo.
-    pub(crate) fn get_nodes(&self) -> impl Iterator<Item = &VersionedCrdsValue> {
+    pub fn get_nodes(&self) -> impl Iterator<Item = &VersionedCrdsValue> {
         self.nodes.iter().map(move |i| self.table.index(*i))
     }
 
     /// Returns ContactInfo of all known nodes.
-    pub(crate) fn get_nodes_contact_info(&self) -> impl Iterator<Item = &ContactInfo> {
+    pub fn get_nodes_contact_info(&self) -> impl Iterator<Item = &ContactInfo> {
         self.get_nodes().map(|v| match &v.value.data {
             CrdsData::ContactInfo(info) => info,
             _ => panic!("this should not happen!"),
@@ -372,7 +378,7 @@ impl Crds {
         self.table.values()
     }
 
-    pub(crate) fn par_values(&self) -> ParValues<'_, CrdsValueLabel, VersionedCrdsValue> {
+    pub fn par_values(&self) -> ParValues<'_, CrdsValueLabel, VersionedCrdsValue> {
         self.table.par_values()
     }
 
@@ -396,7 +402,7 @@ impl Crds {
 
     /// Returns all crds values which the first 'mask_bits'
     /// of their hash value is equal to 'mask'.
-    pub(crate) fn filter_bitmask(
+    pub fn filter_bitmask(
         &self,
         mask: u64,
         mask_bits: u32,
@@ -407,7 +413,7 @@ impl Crds {
     }
 
     /// Update the timestamp's of all the labels that are associated with Pubkey
-    pub(crate) fn update_record_timestamp(&mut self, pubkey: &Pubkey, now: u64) {
+    pub fn update_record_timestamp(&mut self, pubkey: &Pubkey, now: u64) {
         // It suffices to only overwrite the origin's timestamp since that is
         // used when purging old values. If the origin does not exist in the
         // table, fallback to exhaustive update on all associated records.
@@ -683,7 +689,7 @@ mod tests {
         super::*,
         crate::{
             contact_info::ContactInfo,
-            crds_value::{new_rand_timestamp, NodeInstance, SnapshotHashes},
+            crds_value::{new_rand_timestamp, NodeInstance, SnapshotHash},
         },
         rand::{thread_rng, Rng, SeedableRng},
         rand_chacha::ChaChaRng,
@@ -1227,7 +1233,7 @@ mod tests {
         );
         assert_eq!(crds.get_shred_version(&pubkey), Some(8));
         // Add other crds values with the same pubkey.
-        let val = SnapshotHashes::new_rand(&mut rng, Some(pubkey));
+        let val = SnapshotHash::new_rand(&mut rng, Some(pubkey));
         let val = CrdsData::SnapshotHashes(val);
         let val = CrdsValue::new_unsigned(val);
         assert_eq!(
@@ -1238,7 +1244,7 @@ mod tests {
         // Remove contact-info. Shred version should stay there since there
         // are still values associated with the pubkey.
         crds.remove(&CrdsValueLabel::ContactInfo(pubkey), timestamp());
-        assert_eq!(crds.get::<&ContactInfo>(pubkey), None);
+        assert_eq!(crds.get_contact_info(pubkey), None);
         assert_eq!(crds.get_shred_version(&pubkey), Some(8));
         // Remove the remaining entry with the same pubkey.
         crds.remove(&CrdsValueLabel::SnapshotHashes(pubkey), timestamp());

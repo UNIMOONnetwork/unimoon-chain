@@ -734,12 +734,12 @@ fn process_activate(
 
     let rent = rpc_client.get_minimum_balance_for_rent_exemption(Feature::size_of())?;
 
-    let blockhash = rpc_client.get_latest_blockhash()?;
+    let (blockhash, fee_calculator) = rpc_client.get_recent_blockhash()?;
     let (message, _) = resolve_spend_tx_and_check_account_balance(
         rpc_client,
         false,
         SpendAmount::Some(rent),
-        &blockhash,
+        &fee_calculator,
         &config.signers[0].pubkey(),
         |lamports| {
             Message::new(

@@ -31,15 +31,8 @@ where
         nonce
     }
 
-    pub fn register_response<R>(
-        &mut self,
-        nonce: u32,
-        response: &S,
-        now: u64,
-        // runs if the response was valid
-        success_fn: impl Fn(&T) -> R,
-    ) -> Option<R> {
-        let (response, should_delete) = self
+    pub fn register_response(&mut self, nonce: u32, response: &S, now: u64) -> bool {
+        let (is_valid, should_delete) = self
             .requests
             .get_mut(&nonce)
             .map(|status| {
@@ -48,15 +41,12 @@ where
                     && status.request.verify_response(response)
                 {
                     status.num_expected_responses -= 1;
-                    (
-                        Some(success_fn(&status.request)),
-                        status.num_expected_responses == 0,
-                    )
+                    (true, status.num_expected_responses == 0)
                 } else {
-                    (None, true)
+                    (false, true)
                 }
             })
-            .unwrap_or((None, false));
+            .unwrap_or((false, false));
 
         if should_delete {
             self.requests
@@ -64,7 +54,7 @@ where
                 .expect("Delete must delete existing object");
         }
 
-        response
+        is_valid
     }
 }
 
@@ -85,13 +75,13 @@ pub struct RequestStatus<T> {
 #[cfg(test)]
 pub(crate) mod tests {
     use {
-        super::*, crate::serve_repair::ShredRepairType, solana_ledger::shred::Shred,
+        super::*, crate::serve_repair::RepairType, solana_ledger::shred::Shred,
         solana_sdk::timing::timestamp,
     };
 
     #[test]
     fn test_add_request() {
-        let repair_type = ShredRepairType::Orphan(9);
+        let repair_type = RepairType::Orphan(9);
         let mut outstanding_requests = OutstandingRequests::default();
         let nonce = outstanding_requests.add_request(repair_type, timestamp());
         let request_status = outstanding_requests.requests.get(&nonce).unwrap();
@@ -104,7 +94,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_timeout_expired_remove() {
-        let repair_type = ShredRepairType::Orphan(9);
+        let repair_type = RepairType::Orphan(9);
         let mut outstanding_requests = OutstandingRequests::default();
         let nonce = outstanding_requests.add_request(repair_type, timestamp());
         let shred = Shred::new_empty_data_shred();
@@ -115,15 +105,13 @@ pub(crate) mod tests {
             .unwrap()
             .expire_timestamp;
 
-        assert!(outstanding_requests
-            .register_response(nonce, &shred, expire_timestamp + 1, |_| ())
-            .is_none());
+        assert!(!outstanding_requests.register_response(nonce, &shred, expire_timestamp + 1));
         assert!(outstanding_requests.requests.get(&nonce).is_none());
     }
 
     #[test]
     fn test_register_response() {
-        let repair_type = ShredRepairType::Orphan(9);
+        let repair_type = RepairType::Orphan(9);
         let mut outstanding_requests = OutstandingRequests::default();
         let nonce = outstanding_requests.add_request(repair_type, timestamp());
 
@@ -141,9 +129,7 @@ pub(crate) mod tests {
         assert!(num_expected_responses > 1);
 
         // Response that passes all checks should decrease num_expected_responses
-        assert!(outstanding_requests
-            .register_response(nonce, &shred, expire_timestamp - 1, |_| ())
-            .is_some());
+        assert!(outstanding_requests.register_response(nonce, &shred, expire_timestamp - 1));
         num_expected_responses -= 1;
         assert_eq!(
             outstanding_requests
@@ -155,12 +141,8 @@ pub(crate) mod tests {
         );
 
         // Response with incorrect nonce is ignored
-        assert!(outstanding_requests
-            .register_response(nonce + 1, &shred, expire_timestamp - 1, |_| ())
-            .is_none());
-        assert!(outstanding_requests
-            .register_response(nonce + 1, &shred, expire_timestamp, |_| ())
-            .is_none());
+        assert!(!outstanding_requests.register_response(nonce + 1, &shred, expire_timestamp - 1));
+        assert!(!outstanding_requests.register_response(nonce + 1, &shred, expire_timestamp));
         assert_eq!(
             outstanding_requests
                 .requests
@@ -172,9 +154,7 @@ pub(crate) mod tests {
 
         // Response with timestamp over limit should remove status, preventing late
         // responses from being accepted
-        assert!(outstanding_requests
-            .register_response(nonce, &shred, expire_timestamp, |_| ())
-            .is_none());
+        assert!(!outstanding_requests.register_response(nonce, &shred, expire_timestamp));
         assert!(outstanding_requests.requests.get(&nonce).is_none());
 
         // If number of outstanding requests hits zero, should also remove the entry
@@ -192,9 +172,7 @@ pub(crate) mod tests {
         assert!(num_expected_responses > 1);
         for _ in 0..num_expected_responses {
             assert!(outstanding_requests.requests.get(&nonce).is_some());
-            assert!(outstanding_requests
-                .register_response(nonce, &shred, expire_timestamp - 1, |_| ())
-                .is_some());
+            assert!(outstanding_requests.register_response(nonce, &shred, expire_timestamp - 1));
         }
         assert!(outstanding_requests.requests.get(&nonce).is_none());
     }

@@ -52,12 +52,8 @@ pub struct VoteAccounts {
 }
 
 impl VoteAccount {
-    pub fn account(&self) -> &Account {
-        &self.0.account
-    }
-
     pub(crate) fn lamports(&self) -> u64 {
-        self.account().lamports
+        self.0.account.lamports
     }
 
     pub fn vote_state(&self) -> RwLockReadGuard<Result<VoteState, InstructionError>> {
@@ -67,10 +63,6 @@ impl VoteAccount {
             *inner.vote_state.write().unwrap() = vote_state;
         });
         inner.vote_state.read().unwrap()
-    }
-
-    pub fn is_deserialized(&self) -> bool {
-        self.0.vote_state_once.is_completed()
     }
 
     /// VoteState.node_pubkey of this vote-account.
@@ -203,12 +195,6 @@ impl From<AccountSharedData> for VoteAccount {
 impl From<Account> for VoteAccount {
     fn from(account: Account) -> Self {
         Self(Arc::new(VoteAccountInner::from(account)))
-    }
-}
-
-impl AsRef<VoteAccountInner> for VoteAccount {
-    fn as_ref(&self) -> &VoteAccountInner {
-        &self.0
     }
 }
 

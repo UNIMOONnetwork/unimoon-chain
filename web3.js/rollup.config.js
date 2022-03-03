@@ -2,6 +2,7 @@ import babel from '@rollup/plugin-babel';
 import commonjs from '@rollup/plugin-commonjs';
 import json from '@rollup/plugin-json';
 import nodeResolve from '@rollup/plugin-node-resolve';
+import nodePolyfills from 'rollup-plugin-node-polyfills';
 import replace from '@rollup/plugin-replace';
 import {terser} from 'rollup-plugin-terser';
 
@@ -50,15 +51,14 @@ function generateConfig(configType, format) {
     // Prevent dependencies from being bundled
     config.external = [
       /@babel\/runtime/,
-      '@solana/buffer-layout',
       'bn.js',
       'borsh',
       'bs58',
-      'buffer',
+      'buffer-layout',
       'crypto-hash',
       'jayson/lib/client/browser',
       'js-sha3',
-      'cross-fetch',
+      'node-fetch',
       'rpc-websockets',
       'secp256k1',
       'superstruct',
@@ -81,16 +81,15 @@ function generateConfig(configType, format) {
           // Prevent dependencies from being bundled
           config.external = [
             /@babel\/runtime/,
-            '@solana/buffer-layout',
             'bn.js',
             'borsh',
             'bs58',
             'buffer',
+            'buffer-layout',
             'crypto-hash',
-            'http',
-            'https',
             'jayson/lib/client/browser',
             'js-sha3',
+            'node-fetch',
             'rpc-websockets',
             'secp256k1',
             'superstruct',
@@ -100,8 +99,6 @@ function generateConfig(configType, format) {
           break;
         }
         case 'iife': {
-          config.external = ['http', 'https'];
-
           config.output = [
             {
               file: 'lib/index.iife.js',
@@ -127,6 +124,7 @@ function generateConfig(configType, format) {
       // TODO: Find a workaround to avoid resolving the following JSON file:
       // `node_modules/secp256k1/node_modules/elliptic/package.json`
       config.plugins.push(json());
+      config.plugins.push(nodePolyfills());
 
       break;
     case 'node':

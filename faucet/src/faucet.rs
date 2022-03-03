@@ -7,7 +7,6 @@
 use {
     bincode::{deserialize, serialize, serialized_size},
     byteorder::{ByteOrder, LittleEndian},
-    crossbeam_channel::{unbounded, Sender},
     log::*,
     serde_derive::{Deserialize, Serialize},
     solana_metrics::datapoint_info,
@@ -26,7 +25,7 @@ use {
         collections::{HashMap, HashSet},
         io::{Read, Write},
         net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
-        sync::{Arc, Mutex},
+        sync::{mpsc::Sender, Arc, Mutex},
         thread,
         time::Duration,
     },
@@ -83,6 +82,16 @@ pub enum FaucetRequest {
         to: Pubkey,
         blockhash: Hash,
     },
+}
+
+impl Default for FaucetRequest {
+    fn default() -> Self {
+        Self::GetAirdrop {
+            lamports: u64::default(),
+            to: Pubkey::default(),
+            blockhash: Hash::default(),
+        }
+    }
 }
 
 pub enum FaucetTransaction {
@@ -348,7 +357,7 @@ pub fn run_local_faucet_with_port(
 
 // For integration tests. Listens on random open port and reports port to Sender.
 pub fn run_local_faucet(faucet_keypair: Keypair, per_time_cap: Option<u64>) -> SocketAddr {
-    let (sender, receiver) = unbounded();
+    let (sender, receiver) = std::sync::mpsc::channel();
     run_local_faucet_with_port(faucet_keypair, sender, per_time_cap, 0);
     receiver
         .recv()
@@ -407,15 +416,7 @@ async fn process(
     mut stream: TokioTcpStream,
     faucet: Arc<Mutex<Faucet>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut request = vec![
-        0u8;
-        serialized_size(&FaucetRequest::GetAirdrop {
-            lamports: u64::default(),
-            to: Pubkey::default(),
-            blockhash: Hash::default(),
-        })
-        .unwrap() as usize
-    ];
+    let mut request = vec![0u8; serialized_size(&FaucetRequest::default()).unwrap() as usize];
     while stream.read_exact(&mut request).await.is_ok() {
         trace!("{:?}", request);
 
