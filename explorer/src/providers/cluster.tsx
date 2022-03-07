@@ -75,7 +75,7 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
   }
 }
 
-export const DEFAULT_CLUSTER = Cluster.MainnetBeta;
+export const DEFAULT_CLUSTER = Cluster.Devnet;
 const DEFAULT_CUSTOM_URL = "http://localhost:8899";
 
 type Action = State;
@@ -122,8 +122,9 @@ function parseQuery(query: URLSearchParams): Cluster {
     case "testnet":
       return Cluster.Testnet;
     case "mainnet-beta":
-    default:
       return Cluster.MainnetBeta;
+    default:
+      return Cluster.Devnet;
   }
 }
 

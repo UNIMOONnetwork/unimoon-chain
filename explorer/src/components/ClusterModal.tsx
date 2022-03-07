@@ -1,4 +1,4 @@
-import React, { ChangeEvent } from "react";
+import React, { Fragment, ChangeEvent } from "react";
 import { Link, useHistory, useLocation } from "react-router-dom";
 import { useDebounceCallback } from "@react-hook/debounce";
 import { Location } from "history";
@@ -91,6 +91,8 @@ function CustomClusterInput({ activeSuffix, active }: InputProps) {
     ? `border-${activeSuffix} text-${activeSuffix}`
     : "btn-white";
 
+  const btnDisable = "pe-none";
+
   const clusterLocation = (location: Location) => {
     query.set("cluster", "custom");
     if (customUrl.length > 0) {
@@ -113,7 +115,7 @@ function CustomClusterInput({ activeSuffix, active }: InputProps) {
   const inputTextClass = editing ? "" : "text-muted";
   return (
     <>
-      <Link className={`btn col-12 mb-3 ${btnClass}`} to={clusterLocation}>
+      <Link className={`btn col-12 mb-3 ${btnClass} ${btnDisable}`} to={clusterLocation}>
         Custom RPC URL
       </Link>
       {active && (
@@ -165,6 +167,8 @@ function ClusterToggle() {
           ? `border-${activeSuffix} text-${activeSuffix}`
           : "btn-white";
 
+        const btnDisable = "pe-none";
+
         const clusterLocation = (location: Location) => {
           const params = new URLSearchParams(location.search);
           const slug = clusterSlug(net);
@@ -180,13 +184,22 @@ function ClusterToggle() {
         };
 
         return (
-          <Link
-            key={index}
-            className={`btn col-12 mb-3 ${btnClass}`}
-            to={clusterLocation}
-          >
-            {clusterName(net)}
-          </Link>
+          <Fragment>
+            {net === Cluster.Devnet? <Link
+              key={index}
+              className={`btn col-12 mb-3 ${btnClass}`}
+              to={clusterLocation}            
+            >
+              {clusterName(net)}
+            </Link> : 
+            <Link
+              key={index}
+              className={`btn col-12 mb-3 ${btnClass} ${btnDisable}`}
+              to={clusterLocation}            
+            >
+              {clusterName(net)}
+            </Link>}
+          </Fragment>          
         );
       })}
     </div>
